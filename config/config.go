@@ -75,6 +75,29 @@ func DefaultConfig() BrainConfig {
 	}
 }
 
+// DefaultConfigPath returns the conventional path for brain.json:
+// $BRAIN_CONFIG if set, otherwise ~/.synapses/brain.json.
+func DefaultConfigPath() string {
+	if p := os.Getenv("BRAIN_CONFIG"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".synapses", "brain.json")
+}
+
+// SaveFile writes cfg as indented JSON to path, creating parent directories
+// as needed.
+func SaveFile(path string, cfg BrainConfig) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
 // LoadFile reads a JSON config file and merges it onto the defaults.
 // Missing fields in the file retain their default values.
 func LoadFile(path string) (BrainConfig, error) {

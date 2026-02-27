@@ -12,9 +12,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/synapses/synapses-intelligence/internal/enricher"
-	"github.com/synapses/synapses-intelligence/internal/sdlc"
-	"github.com/synapses/synapses-intelligence/internal/store"
+	"github.com/Divish1032/synapses-intelligence/internal/enricher"
+	"github.com/Divish1032/synapses-intelligence/internal/sdlc"
+	"github.com/Divish1032/synapses-intelligence/internal/store"
 )
 
 const (

@@ -16,14 +16,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
-	"github.com/synapses/synapses-intelligence/config"
-	"github.com/synapses/synapses-intelligence/internal/store"
-	"github.com/synapses/synapses-intelligence/pkg/brain"
-	"github.com/synapses/synapses-intelligence/server"
+	"github.com/Divish1032/synapses-intelligence/config"
+	"github.com/Divish1032/synapses-intelligence/internal/store"
+	"github.com/Divish1032/synapses-intelligence/pkg/brain"
+	"github.com/Divish1032/synapses-intelligence/server"
 )
 
 const version = "0.3.0"
@@ -34,19 +36,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load config (optional, defaults apply if not found).
-	cfgPath := os.Getenv("BRAIN_CONFIG")
-	var cfg config.BrainConfig
-	if cfgPath != "" {
-		var err error
-		cfg, err = config.LoadFile(cfgPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "brain: warning: could not load config %q: %v\n", cfgPath, err)
-			cfg = config.DefaultConfig()
-		}
-	} else {
-		cfg = config.DefaultConfig()
-	}
+	// Load config from the default path (BRAIN_CONFIG env or ~/.synapses/brain.json).
+	// If the file doesn't exist yet that's fine — defaults apply.
+	cfgPath := config.DefaultConfigPath()
+	cfg, _ := config.LoadFile(cfgPath) // errors silently fall back to defaults
 
 	// Override enabled for CLI commands — the binary is always "enabled".
 	cfg.Enabled = true
@@ -56,6 +49,10 @@ func main() {
 		cmdServe(cfg)
 	case "status":
 		cmdStatus(cfg)
+	case "config":
+		cmdConfig(cfg, cfgPath, os.Args[2:])
+	case "setup":
+		cmdSetup(cfg, cfgPath)
 	case "ingest":
 		cmdIngest(cfg, os.Args[2:])
 	case "summaries":
@@ -91,7 +88,6 @@ func cmdServe(cfg config.BrainConfig) {
 
 	b := brain.New(cfg)
 
-	// Warn if Ollama is not available at startup.
 	ctx := context.Background()
 	if !b.Available() {
 		fmt.Fprintf(os.Stderr,
@@ -99,7 +95,13 @@ func cmdServe(cfg config.BrainConfig) {
 			cfg.OllamaURL,
 		)
 	} else {
-		fmt.Printf("brain: connected to Ollama (%s)\n", b.ModelName())
+		fmt.Printf("brain: Ollama reachable, checking model %q...\n", b.ModelName())
+		if err := b.EnsureModel(ctx, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "brain: warning: could not pull model: %v\n", err)
+			fmt.Fprintf(os.Stderr, "brain: run manually:  ollama pull %s\n", b.ModelName())
+		} else {
+			fmt.Printf("brain: model %q ready\n", b.ModelName())
+		}
 	}
 
 	srv := server.New(b, cfg.Port)
@@ -411,34 +413,248 @@ Commands:
   patterns        List learned co-occurrence patterns
   reset           Clear all brain data (prompts for confirmation)
   version         Print version
+  setup           Interactive-free setup: detects RAM, picks model, pulls it, writes config
+  config          Read or update brain.json settings
+                  brain config                       — show current config
+                  brain config model <tag> [--pull]  — set model (optionally pull now)
+                  brain config ollama <url>          — set Ollama URL
 
-Environment:
-  BRAIN_CONFIG   Path to a JSON config file (optional)
+Quick start (3 steps):
+  1. brain setup          ← detects RAM, picks model, pulls it, writes config
+  2. brain serve          ← start the sidecar
+  3. Add to synapses.json: {"brain": {"url": "http://localhost:11435", "enable_llm": true}}
 
-Quick start:
-  1. Install Ollama: https://ollama.com
-  2. Pull the default model: ollama pull qwen2.5-coder:1.5b
-  3. Start the brain: brain serve
-  4. Check status: brain status
-
-Config example (brain.json):
-  {
-    "enabled": true,
-    "model": "qwen2.5-coder:1.5b",
-    "ollama_url": "http://localhost:11434",
-    "timeout_ms": 3000,
-    "context_builder": true,
-    "learning_enabled": true,
-    "default_phase": "development",
-    "default_mode": "standard"
-  }
+Config file: ~/.synapses/brain.json  (override with BRAIN_CONFIG env var)
 
 Model tiers (by system RAM):
-  4GB   →  qwen2.5-coder:1.5b  (default, ~900MB)
-  4GB+  →  qwen3:1.7b           (recommended, ~1.1GB)
+  any   →  qwen2.5-coder:1.5b  (default, ~900MB)
+  4GB+  →  qwen3:1.7b           (recommended, ~1.1GB, thinking mode)
   8GB+  →  qwen3:4b             (~2.5GB)
   16GB+ →  qwen3:8b             (~5GB)
+
+  Change model:  brain config model qwen3:4b --pull
 `, version)
+}
+
+// cmdConfig reads or mutates brain.json settings.
+//
+//	brain config                   — show current config path + active settings
+//	brain config model <tag>       — set model and save; use --pull to also pull it
+//	brain config ollama <url>      — set Ollama URL and save
+func cmdConfig(cfg config.BrainConfig, cfgPath string, args []string) {
+	if len(args) == 0 {
+		// Show current effective config.
+		fmt.Printf("Config file: %s\n", cfgPath)
+		data, _ := json.MarshalIndent(cfg, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+
+	subCmd := args[0]
+	switch subCmd {
+	case "model":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: brain config model <tag> [--pull]")
+			os.Exit(1)
+		}
+		newModel := args[1]
+		pull := len(args) > 2 && args[2] == "--pull"
+
+		cfg.Model = newModel
+		if err := config.SaveFile(cfgPath, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "brain config: save failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("brain config: model set to %q (saved to %s)\n", newModel, cfgPath)
+
+		if pull {
+			b := brain.New(cfg)
+			if !b.Available() {
+				fmt.Fprintf(os.Stderr, "brain config: Ollama not reachable at %s — skipping pull\n", cfg.OllamaURL)
+				return
+			}
+			fmt.Printf("brain config: pulling %q...\n", newModel)
+			if err := b.EnsureModel(context.Background(), os.Stderr); err != nil {
+				fmt.Fprintf(os.Stderr, "brain config: pull failed: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("\nbrain config: model %q ready\n", newModel)
+		} else {
+			fmt.Printf("tip: run  brain config model %s --pull  to download now, or it will be pulled on next  brain serve\n", newModel)
+		}
+
+	case "ollama":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: brain config ollama <url>")
+			os.Exit(1)
+		}
+		cfg.OllamaURL = args[1]
+		if err := config.SaveFile(cfgPath, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "brain config: save failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("brain config: ollama_url set to %q (saved to %s)\n", cfg.OllamaURL, cfgPath)
+
+	default:
+		fmt.Fprintf(os.Stderr, "brain config: unknown subcommand %q\n", subCmd)
+		fmt.Fprintln(os.Stderr, "usage: brain config model <tag> [--pull]")
+		fmt.Fprintln(os.Stderr, "       brain config ollama <url>")
+		os.Exit(1)
+	}
+}
+
+// modelTiers lists the recommended models ordered from smallest to largest.
+var modelTiers = []struct {
+	minGB int
+	model string
+	size  string
+	note  string
+}{
+	{0, "qwen2.5-coder:1.5b", "~900MB", "default, runs on any machine"},
+	{4, "qwen3:1.7b", "~1.1GB", "recommended — thinking mode"},
+	{8, "qwen3:4b", "~2.5GB", "power user"},
+	{16, "qwen3:8b", "~5GB", "enterprise"},
+}
+
+// systemRAMGB returns total system RAM in gigabytes (best-effort, returns 0 on failure).
+func systemRAMGB() int {
+	switch runtime.GOOS {
+	case "darwin":
+		out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+		if err != nil {
+			return 0
+		}
+		var bytes int64
+		if _, err := fmt.Sscanf(string(out), "%d", &bytes); err != nil {
+			return 0
+		}
+		return int(bytes / (1024 * 1024 * 1024))
+	case "linux":
+		out, err := exec.Command("grep", "MemTotal", "/proc/meminfo").Output()
+		if err != nil {
+			return 0
+		}
+		var kb int64
+		if _, err := fmt.Sscanf(string(out), "MemTotal: %d kB", &kb); err != nil {
+			return 0
+		}
+		return int(kb / (1024 * 1024))
+	}
+	return 0
+}
+
+// recommendedModel returns the largest model that fits in the detected RAM.
+func recommendedModel(ramGB int) (string, string) {
+	best := modelTiers[0]
+	for _, t := range modelTiers {
+		if ramGB >= t.minGB {
+			best = t
+		}
+	}
+	return best.model, best.size
+}
+
+// ollamaInstalled returns true if the `ollama` binary is on PATH.
+func ollamaInstalled() bool {
+	_, err := exec.LookPath("ollama")
+	return err == nil
+}
+
+// cmdSetup runs an interactive-free setup wizard: detects RAM, picks a model,
+// checks/explains Ollama, pulls the model, and writes brain.json.
+func cmdSetup(cfg config.BrainConfig, cfgPath string) {
+	fmt.Println("synapses-intelligence setup")
+	fmt.Println("────────────────────────────")
+
+	// Step 1: RAM detection.
+	ramGB := systemRAMGB()
+	if ramGB > 0 {
+		fmt.Printf("  System RAM:  %d GB\n", ramGB)
+	} else {
+		fmt.Println("  System RAM:  unknown")
+		ramGB = 4 // safe default
+	}
+
+	// Step 2: Model recommendation.
+	model, size := recommendedModel(ramGB)
+	fmt.Printf("  Recommended: %s  (%s)\n", model, size)
+	fmt.Println()
+	fmt.Println("  All tiers:")
+	for _, t := range modelTiers {
+		marker := "  "
+		if t.model == model {
+			marker = "→ "
+		}
+		fmt.Printf("    %s%-26s %s   %s\n", marker, t.model, t.size, t.note)
+	}
+	fmt.Println()
+
+	// Step 3: Ollama check.
+	if !ollamaInstalled() {
+		fmt.Println("  ✗ Ollama not found on PATH.")
+		fmt.Println()
+		fmt.Println("  Install Ollama first:")
+		switch runtime.GOOS {
+		case "darwin":
+			fmt.Println("    brew install ollama")
+			fmt.Println("    # or download from https://ollama.com/download")
+		case "linux":
+			fmt.Println("    curl -fsSL https://ollama.com/install.sh | sh")
+		default:
+			fmt.Println("    https://ollama.com/download")
+		}
+		fmt.Println()
+		fmt.Println("  Then run  brain setup  again.")
+		os.Exit(1)
+	}
+	fmt.Println("  ✓ Ollama installed")
+
+	// Step 4: Update config with recommended model if user hasn't already customised.
+	if cfg.Model == config.DefaultConfig().Model {
+		cfg.Model = model
+	}
+	cfg.Enabled = true
+
+	// Step 5: Save config.
+	if err := config.SaveFile(cfgPath, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "setup: could not write config: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  ✓ Config saved to %s\n", cfgPath)
+
+	// Step 6: Pull model.
+	fmt.Printf("  Pulling %s...\n", cfg.Model)
+	b := brain.New(cfg)
+	if !b.Available() {
+		fmt.Fprintf(os.Stderr, "\n  ✗ Ollama is installed but not running.\n")
+		fmt.Fprintf(os.Stderr, "    Start it with:  ollama serve\n")
+		fmt.Fprintf(os.Stderr, "    Then run:       brain setup\n")
+		os.Exit(1)
+	}
+	if err := b.EnsureModel(context.Background(), os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "\n  ✗ Pull failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "    Try manually:  ollama pull %s\n", cfg.Model)
+		os.Exit(1)
+	}
+
+	// Step 7: Done.
+	fmt.Println()
+	fmt.Println("  ✓ Model ready")
+	fmt.Println()
+	fmt.Println("────────────────────────────")
+	fmt.Println("Setup complete. Next steps:")
+	fmt.Println()
+	fmt.Println("  1. Start the brain sidecar:")
+	fmt.Println("       brain serve")
+	fmt.Println()
+	fmt.Println("  2. Add brain URL to your project's synapses.json:")
+	fmt.Println(`       { "brain": { "url": "http://localhost:11435", "enable_llm": true } }`)
+	fmt.Println()
+	fmt.Println("  3. (Re)start synapses:")
+	fmt.Println("       synapses start --path .")
+	fmt.Println()
+	fmt.Printf("  To change model later:  brain config model <tag> --pull\n")
+	fmt.Printf("  Available tags: qwen2.5-coder:1.5b  qwen3:1.7b  qwen3:4b  qwen3:8b\n")
 }
 
 func truncate(s string, n int) string {

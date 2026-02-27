@@ -1,6 +1,9 @@
 package brain
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 // NullBrain is a no-op Brain implementation used when the brain is disabled
 // or when the LLM backend is unavailable. All methods return zero values without
@@ -23,9 +26,10 @@ func (n *NullBrain) Coordinate(_ context.Context, _ CoordinateRequest) (Coordina
 	return CoordinateResponse{}, nil
 }
 
-func (n *NullBrain) Summary(_ string) string { return "" }
-func (n *NullBrain) Available() bool         { return false }
-func (n *NullBrain) ModelName() string       { return "" }
+func (n *NullBrain) Summary(_ string) string                         { return "" }
+func (n *NullBrain) Available() bool                                  { return false }
+func (n *NullBrain) ModelName() string                                { return "" }
+func (n *NullBrain) EnsureModel(_ context.Context, _ io.Writer) error { return nil }
 
 func (n *NullBrain) BuildContextPacket(_ context.Context, _ ContextPacketRequest) (*ContextPacket, error) {
 	return nil, nil // nil packet → caller uses raw Synapses context

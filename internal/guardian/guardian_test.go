@@ -2,12 +2,13 @@ package guardian
 
 import (
 	"context"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/synapses/synapses-intelligence/internal/llm"
-	"github.com/synapses/synapses-intelligence/internal/store"
+	"github.com/Divish1032/synapses-intelligence/internal/llm"
+	"github.com/Divish1032/synapses-intelligence/internal/store"
 )
 
 func newTestStore(t *testing.T) *store.Store {
@@ -109,5 +110,7 @@ func (m *countingMock) Generate(_ context.Context, _ string) (string, error) {
 	*m.count++
 	return m.response, nil
 }
-func (m *countingMock) Available(_ context.Context) bool { return true }
-func (m *countingMock) ModelName() string                { return "mock" }
+func (m *countingMock) Available(_ context.Context) bool             { return true }
+func (m *countingMock) ModelName() string                            { return "mock" }
+func (m *countingMock) ModelPulled(_ context.Context) bool           { return true }
+func (m *countingMock) PullModel(_ context.Context, _ io.Writer) error { return nil }

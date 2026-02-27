@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/synapses/synapses-intelligence/internal/llm"
-	"github.com/synapses/synapses-intelligence/internal/store"
+	"github.com/Divish1032/synapses-intelligence/internal/llm"
+	"github.com/Divish1032/synapses-intelligence/internal/store"
 )
 
 const (
