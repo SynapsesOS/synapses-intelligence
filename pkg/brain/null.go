@@ -39,3 +39,5 @@ func (n *NullBrain) SetQualityMode(_ QualityMode, _ string) error { return nil }
 func (n *NullBrain) GetSDLCConfig() SDLCConfig {
 	return SDLCConfig{Phase: PhaseDevelopment, QualityMode: QualityStandard}
 }
+
+func (n *NullBrain) GetPatterns(_ string, _ int) []PatternHint { return nil }

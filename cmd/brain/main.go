@@ -26,7 +26,7 @@ import (
 	"github.com/synapses/synapses-intelligence/server"
 )
 
-const version = "0.1.0"
+const version = "0.3.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -60,6 +60,12 @@ func main() {
 		cmdIngest(cfg, os.Args[2:])
 	case "summaries":
 		cmdSummaries(cfg)
+	case "sdlc":
+		cmdSDLC(cfg, os.Args[2:])
+	case "decisions":
+		cmdDecisions(cfg, os.Args[2:])
+	case "patterns":
+		cmdPatterns(cfg)
 	case "reset":
 		cmdReset(cfg)
 	case "version", "--version", "-v":
@@ -139,6 +145,14 @@ func cmdStatus(cfg config.BrainConfig) {
 	printFeature("enrich", cfg.Enrich)
 	printFeature("guardian", cfg.Guardian)
 	printFeature("orchestrate", cfg.Orchestrate)
+	printFeature("context_builder", cfg.ContextBuilder)
+	printFeature("learning", cfg.LearningEnabled)
+
+	// SDLC config (reuse b from above).
+	sdlcCfg := b.GetSDLCConfig()
+	fmt.Printf("\nSDLC:\n")
+	fmt.Printf("  %-12s %s\n", "phase", sdlcCfg.Phase)
+	fmt.Printf("  %-12s %s\n", "mode", sdlcCfg.QualityMode)
 }
 
 func printFeature(name string, enabled bool) {
@@ -222,6 +236,133 @@ func cmdSummaries(cfg config.BrainConfig) {
 	fmt.Printf("\nTotal: %d summaries\n", len(summaries))
 }
 
+// cmdSDLC shows or sets the SDLC phase and quality mode.
+//
+//	brain sdlc              Show current phase and mode
+//	brain sdlc phase <p>    Set phase (planning|development|testing|review|deployment)
+//	brain sdlc mode <m>     Set mode (quick|standard|enterprise)
+func cmdSDLC(cfg config.BrainConfig, args []string) {
+	b := brain.New(cfg)
+
+	if len(args) == 0 {
+		// Show current SDLC config.
+		cfg := b.GetSDLCConfig()
+		fmt.Printf("Phase:        %s\n", cfg.Phase)
+		fmt.Printf("Quality Mode: %s\n", cfg.QualityMode)
+		if cfg.UpdatedAt != "" {
+			fmt.Printf("Updated:      %s", cfg.UpdatedAt)
+			if cfg.UpdatedBy != "" {
+				fmt.Printf(" by %s", cfg.UpdatedBy)
+			}
+			fmt.Println()
+		}
+		return
+	}
+
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "brain sdlc: usage: brain sdlc phase <phase>  OR  brain sdlc mode <mode>")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "phase":
+		if err := b.SetSDLCPhase(brain.SDLCPhase(args[1]), "cli"); err != nil {
+			fmt.Fprintf(os.Stderr, "brain sdlc phase: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Phase set to: %s\n", args[1])
+	case "mode":
+		if err := b.SetQualityMode(brain.QualityMode(args[1]), "cli"); err != nil {
+			fmt.Fprintf(os.Stderr, "brain sdlc mode: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Quality mode set to: %s\n", args[1])
+	default:
+		fmt.Fprintf(os.Stderr, "brain sdlc: unknown subcommand %q — use 'phase' or 'mode'\n", args[0])
+		os.Exit(1)
+	}
+}
+
+// cmdDecisions lists recent decision log entries.
+//
+//	brain decisions              Show last 20 decisions
+//	brain decisions <entity>     Show decisions for a specific entity
+func cmdDecisions(cfg config.BrainConfig, args []string) {
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "brain decisions: open store: %v\n", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+
+	entity := ""
+	if len(args) > 0 {
+		entity = args[0]
+	}
+
+	entries, err := st.GetRecentDecisions(entity, 20)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "brain decisions: query: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(entries) == 0 {
+		if entity != "" {
+			fmt.Printf("No decisions recorded for entity %q.\n", entity)
+		} else {
+			fmt.Println("No decisions recorded yet. Agents call POST /v1/decision to log decisions.")
+		}
+		return
+	}
+
+	fmt.Printf("%-20s  %-12s  %-20s  %-8s  %s\n", "ENTITY", "PHASE", "ACTION", "OUTCOME", "AGENT")
+	fmt.Println(repeat("-", 90))
+	for _, e := range entries {
+		fmt.Printf("%-20s  %-12s  %-20s  %-8s  %s\n",
+			truncate(e.EntityName, 18),
+			truncate(e.Phase, 10),
+			truncate(e.Action, 18),
+			truncate(e.Outcome, 6),
+			truncate(e.AgentID, 20),
+		)
+	}
+	fmt.Printf("\nShowing %d entries\n", len(entries))
+}
+
+// cmdPatterns lists learned co-occurrence patterns.
+func cmdPatterns(cfg config.BrainConfig) {
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "brain patterns: open store: %v\n", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+
+	patterns, err := st.AllPatterns()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "brain patterns: query: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(patterns) == 0 {
+		fmt.Println("No patterns learned yet. Patterns are built from POST /v1/decision calls.")
+		return
+	}
+
+	fmt.Printf("%-25s  %-25s  %6s  %6s  %s\n", "TRIGGER", "CO-CHANGE", "CONF", "COUNT", "REASON")
+	fmt.Println(repeat("-", 100))
+	for _, p := range patterns {
+		fmt.Printf("%-25s  %-25s  %6.2f  %6d  %s\n",
+			truncate(p.Trigger, 23),
+			truncate(p.CoChange, 23),
+			p.Confidence,
+			p.CoCount,
+			truncate(p.Reason, 40),
+		)
+	}
+	fmt.Printf("\nTotal: %d patterns\n", len(patterns))
+}
+
 // cmdReset clears all brain data.
 func cmdReset(cfg config.BrainConfig) {
 	fmt.Printf("This will delete all summaries and violation cache from %s.\n", cfg.DBPath)
@@ -255,13 +396,21 @@ Usage:
   brain <command> [flags]
 
 Commands:
-  serve        Start the HTTP sidecar server (default port: 11435)
-               Flags: -port <int>, -model <string>
-  status       Show Ollama connectivity, model, and SQLite stats
-  ingest       Manually ingest a code snippet (JSON via argument or stdin)
-  summaries    List all stored semantic summaries
-  reset        Clear all brain data (prompts for confirmation)
-  version      Print version
+  serve           Start the HTTP sidecar server (default port: 11435)
+                  Flags: -port <int>, -model <string>
+  status          Show Ollama connectivity, model, SQLite stats, SDLC config
+  ingest          Manually ingest a code snippet (JSON via argument or stdin)
+  summaries       List all stored semantic summaries
+  sdlc            Show or set SDLC phase and quality mode
+                  Examples:
+                    brain sdlc
+                    brain sdlc phase testing
+                    brain sdlc mode enterprise
+  decisions       List recent agent decision log entries
+                  brain decisions [entity_name]
+  patterns        List learned co-occurrence patterns
+  reset           Clear all brain data (prompts for confirmation)
+  version         Print version
 
 Environment:
   BRAIN_CONFIG   Path to a JSON config file (optional)
@@ -277,7 +426,11 @@ Config example (brain.json):
     "enabled": true,
     "model": "qwen2.5-coder:1.5b",
     "ollama_url": "http://localhost:11434",
-    "timeout_ms": 3000
+    "timeout_ms": 3000,
+    "context_builder": true,
+    "learning_enabled": true,
+    "default_phase": "development",
+    "default_mode": "standard"
   }
 
 Model tiers (by system RAM):

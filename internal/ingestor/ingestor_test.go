@@ -128,9 +128,9 @@ func TestExtractJSON(t *testing.T) {
 		{" \n{\"summary\": \"hello\"}\n", `{"summary": "hello"}`},
 	}
 	for _, tc := range cases {
-		got := extractJSON(tc.input)
+		got := llm.ExtractJSON(tc.input)
 		if got != tc.want {
-			t.Errorf("extractJSON(%q) = %q, want %q", tc.input, got, tc.want)
+			t.Errorf("ExtractJSON(%q) = %q, want %q", tc.input, got, tc.want)
 		}
 	}
 }

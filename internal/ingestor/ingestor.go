@@ -89,7 +89,7 @@ func (ing *Ingestor) Summarize(ctx context.Context, req Request) (Response, erro
 
 	summary, tags, err := parseSummary(raw)
 	if err != nil {
-		return Response{NodeID: req.NodeID}, fmt.Errorf("parse summary: %w (raw: %q)", err, truncate(raw, 100))
+		return Response{NodeID: req.NodeID}, fmt.Errorf("parse summary: %w (raw: %q)", err, llm.Truncate(raw, 100))
 	}
 
 	if err := ing.store.UpsertSummary(req.NodeID, req.NodeName, summary, tags); err != nil {
@@ -118,7 +118,7 @@ func (ing *Ingestor) buildPrompt(req Request) string {
 // Handles cases where the model wraps the JSON in markdown code fences.
 // Tags are optional — returns nil if the model did not include them.
 func parseSummary(raw string) (summary string, tags []string, err error) {
-	raw = extractJSON(raw)
+	raw = llm.ExtractJSON(raw)
 	var result summaryJSON
 	if err = json.Unmarshal([]byte(raw), &result); err != nil {
 		return "", nil, fmt.Errorf("unmarshal: %w", err)
@@ -130,29 +130,6 @@ func parseSummary(raw string) (summary string, tags []string, err error) {
 	return summary, result.Tags, nil
 }
 
-// extractJSON strips markdown code fences if the LLM wrapped its output.
-func extractJSON(s string) string {
-	s = strings.TrimSpace(s)
-	// Strip ```json ... ``` or ``` ... ```
-	if idx := strings.Index(s, "```"); idx >= 0 {
-		s = s[idx:]
-		s = strings.TrimPrefix(s, "```json")
-		s = strings.TrimPrefix(s, "```")
-		if end := strings.Index(s, "```"); end >= 0 {
-			s = s[:end]
-		}
-	}
-	// Find the first { to skip any leading text
-	if start := strings.Index(s, "{"); start >= 0 {
-		s = s[start:]
-	}
-	// Find the last } to skip any trailing text
-	if end := strings.LastIndex(s, "}"); end >= 0 {
-		s = s[:end+1]
-	}
-	return strings.TrimSpace(s)
-}
-
 // truncateCode caps the code snippet at maxCodeChars runes.
 func truncateCode(code string) string {
 	code = strings.TrimSpace(code)
@@ -161,12 +138,4 @@ func truncateCode(code string) string {
 	}
 	runes := []rune(code)
 	return string(runes[:maxCodeChars]) + "..."
-}
-
-// truncate shortens a string for error messages.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }

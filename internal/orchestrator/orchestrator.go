@@ -112,7 +112,7 @@ func (o *Orchestrator) fallbackResponse(req Request) Response {
 }
 
 func parseCoordinate(raw string) (Response, error) {
-	raw = extractJSON(raw)
+	raw = llm.ExtractJSON(raw)
 	var result coordinateJSON
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
 		return Response{}, fmt.Errorf("unmarshal: %w", err)
@@ -125,23 +125,4 @@ func parseCoordinate(raw string) (Response, error) {
 		Suggestion:       suggestion,
 		AlternativeScope: strings.TrimSpace(result.AlternativeScope),
 	}, nil
-}
-
-func extractJSON(s string) string {
-	s = strings.TrimSpace(s)
-	if idx := strings.Index(s, "```"); idx >= 0 {
-		s = s[idx:]
-		s = strings.TrimPrefix(s, "```json")
-		s = strings.TrimPrefix(s, "```")
-		if end := strings.Index(s, "```"); end >= 0 {
-			s = s[:end]
-		}
-	}
-	if start := strings.Index(s, "{"); start >= 0 {
-		s = s[start:]
-	}
-	if end := strings.LastIndex(s, "}"); end >= 0 {
-		s = s[:end+1]
-	}
-	return strings.TrimSpace(s)
 }

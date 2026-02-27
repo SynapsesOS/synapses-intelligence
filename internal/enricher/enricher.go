@@ -47,6 +47,7 @@ type Request struct {
 type Response struct {
 	Insight  string
 	Concerns []string
+	LLMUsed  bool // true when the LLM was called; false on cache hit (future)
 }
 
 type insightJSON struct {
@@ -83,7 +84,7 @@ func (e *Enricher) Enrich(ctx context.Context, req Request) (Response, error) {
 
 	result, err := parseInsight(raw)
 	if err != nil {
-		return Response{}, fmt.Errorf("parse insight: %w (raw: %q)", err, truncate(raw, 100))
+		return Response{}, fmt.Errorf("parse insight: %w (raw: %q)", err, llm.Truncate(raw, 100))
 	}
 
 	return result, nil
@@ -116,7 +117,7 @@ func (e *Enricher) buildPrompt(req Request) string {
 }
 
 func parseInsight(raw string) (Response, error) {
-	raw = extractJSON(raw)
+	raw = llm.ExtractJSON(raw)
 	var result insightJSON
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
 		return Response{}, fmt.Errorf("unmarshal: %w", err)
@@ -125,7 +126,7 @@ func parseInsight(raw string) (Response, error) {
 	if insight == "" {
 		return Response{}, fmt.Errorf("empty insight in response")
 	}
-	return Response{Insight: insight, Concerns: result.Concerns}, nil
+	return Response{Insight: insight, Concerns: result.Concerns, LLMUsed: true}, nil
 }
 
 // joinNames joins up to n names into a comma-separated string.
@@ -134,30 +135,4 @@ func joinNames(names []string, n int) string {
 		names = names[:n]
 	}
 	return strings.Join(names, ", ")
-}
-
-func extractJSON(s string) string {
-	s = strings.TrimSpace(s)
-	if idx := strings.Index(s, "```"); idx >= 0 {
-		s = s[idx:]
-		s = strings.TrimPrefix(s, "```json")
-		s = strings.TrimPrefix(s, "```")
-		if end := strings.Index(s, "```"); end >= 0 {
-			s = s[:end]
-		}
-	}
-	if start := strings.Index(s, "{"); start >= 0 {
-		s = s[start:]
-	}
-	if end := strings.LastIndex(s, "}"); end >= 0 {
-		s = s[:end+1]
-	}
-	return strings.TrimSpace(s)
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }

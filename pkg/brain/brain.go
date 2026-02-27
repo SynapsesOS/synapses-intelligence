@@ -67,6 +67,11 @@ type Brain interface {
 
 	// GetSDLCConfig returns the current SDLC config.
 	GetSDLCConfig() SDLCConfig
+
+	// GetPatterns returns learned co-occurrence patterns sorted by confidence.
+	// If trigger is non-empty, only patterns with that trigger are returned.
+	// limit caps the number of results (0 = default of 20).
+	GetPatterns(trigger string, limit int) []PatternHint
 }
 
 // impl is the production Brain backed by Ollama + SQLite.
@@ -133,7 +138,7 @@ func (b *impl) Ingest(ctx context.Context, req IngestRequest) (IngestResponse, e
 	if err != nil {
 		return IngestResponse{NodeID: req.NodeID}, err
 	}
-	return IngestResponse{NodeID: r.NodeID, Summary: r.Summary}, nil
+	return IngestResponse{NodeID: r.NodeID, Summary: r.Summary, Tags: r.Tags}, nil
 }
 
 func (b *impl) Enrich(ctx context.Context, req EnrichRequest) (EnrichResponse, error) {
@@ -161,6 +166,7 @@ func (b *impl) Enrich(ctx context.Context, req EnrichRequest) (EnrichResponse, e
 		Insight:   r.Insight,
 		Concerns:  r.Concerns,
 		Summaries: summaries,
+		LLMUsed:   r.LLMUsed,
 	}, nil
 }
 
@@ -282,6 +288,27 @@ func (b *impl) GetSDLCConfig() SDLCConfig {
 	}
 }
 
+func (b *impl) GetPatterns(trigger string, limit int) []PatternHint {
+	if limit <= 0 {
+		limit = 20
+	}
+	var raw []store.ContextPattern
+	if trigger != "" {
+		raw = b.store.GetPatternsForTriggers([]string{trigger}, limit)
+	} else {
+		all, _ := b.store.AllPatterns()
+		if len(all) > limit {
+			all = all[:limit]
+		}
+		raw = all
+	}
+	out := make([]PatternHint, len(raw))
+	for i, p := range raw {
+		out[i] = PatternHint{Trigger: p.Trigger, CoChange: p.CoChange, Reason: p.Reason, Confidence: p.Confidence}
+	}
+	return out
+}
+
 // --- conversion helpers ---
 
 func toBuilderRules(rules []RuleInput) []contextbuilder.RuleRef {
@@ -313,6 +340,8 @@ func toContextPacket(p *contextbuilder.Packet) *ContextPacket {
 		Insight:             p.Insight,
 		Concerns:            p.Concerns,
 		PhaseGuidance:       p.PhaseGuidance,
+		LLMUsed:             p.LLMUsed,
+		PacketQuality:       p.PacketQuality,
 		QualityGate: QualityGate{
 			RequireTests:   p.Gate.RequireTests,
 			RequireDocs:    p.Gate.RequireDocs,

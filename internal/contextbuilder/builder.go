@@ -63,8 +63,14 @@ type Packet struct {
 
 	Insight  string
 	Concerns []string
+	LLMUsed  bool // true when the LLM was called for this packet
 
 	ActiveConstraints []ConstraintItem
+	// PacketQuality is a 0.0-1.0 heuristic reflecting how complete the packet is:
+	//   1.0 = root summary + dep summaries + LLM insight all present
+	//   0.5 = root summary present, no LLM insight
+	//   0.0 = empty packet (no summaries ingested yet)
+	PacketQuality float64
 	TeamStatus        []AgentItem
 	Gate              sdlc.Gate
 	PatternHints      []PatternItem
@@ -150,22 +156,32 @@ func (b *Builder) Build(ctx context.Context, req Request) (*Packet, error) {
 		}
 	}
 
-	// Section 2: LLM Insight (slow path — optional).
-	if sections.LLMInsight && req.EnableLLM && b.enr != nil {
-		r, err := b.enr.Enrich(ctx, enricher.Request{
-			RootID:       req.RootNodeID,
-			RootName:     req.RootName,
-			RootType:     req.RootType,
-			CalleeNames:  req.CalleeNames,
-			CallerNames:  req.CallerNames,
-			RelatedNames: req.RelatedNames,
-			TaskContext:  req.TaskContext,
-		})
-		if err == nil {
-			pkt.Insight = r.Insight
-			pkt.Concerns = r.Concerns
+	// Section 2: LLM Insight (cache-first; slow path only on cache miss).
+	if sections.LLMInsight && req.EnableLLM && b.enr != nil && req.RootNodeID != "" {
+		// Fast path: check cache first (entries live 6h, pruned at startup).
+		if cached, ok := b.store.GetInsightCache(req.RootNodeID, phase); ok {
+			pkt.Insight = cached.Insight
+			pkt.Concerns = cached.Concerns
+			// LLMUsed stays false — served from cache, no live LLM call
+		} else {
+			r, err := b.enr.Enrich(ctx, enricher.Request{
+				RootID:       req.RootNodeID,
+				RootName:     req.RootName,
+				RootType:     req.RootType,
+				CalleeNames:  req.CalleeNames,
+				CallerNames:  req.CallerNames,
+				RelatedNames: req.RelatedNames,
+				TaskContext:  req.TaskContext,
+			})
+			if err == nil {
+				pkt.Insight = r.Insight
+				pkt.Concerns = r.Concerns
+				pkt.LLMUsed = r.LLMUsed
+				// Store in cache for future requests.
+				_ = b.store.UpsertInsightCache(req.RootNodeID, phase, r.Insight, r.Concerns)
+			}
+			// Error is non-fatal — insight section stays empty.
 		}
-		// Error is non-fatal — insight section stays empty.
 	}
 
 	// Section 3: Active constraints.
@@ -194,6 +210,9 @@ func (b *Builder) Build(ctx context.Context, req Request) (*Packet, error) {
 	if sections.PhaseGuidance {
 		pkt.PhaseGuidance = sdlc.PhaseGuidance(phase, mode)
 	}
+
+	// Compute packet quality: 0.0 (empty) → 0.5 (summaries) → 1.0 (full with insight).
+	pkt.PacketQuality = computeQuality(pkt)
 
 	return pkt, nil
 }
@@ -302,4 +321,27 @@ func toPatternItems(patterns []store.ContextPattern) []PatternItem {
 		}
 	}
 	return out
+}
+
+// computeQuality returns a 0.0–1.0 heuristic for how complete a packet is.
+//
+// Scoring:
+//   - RootSummary present: +0.4
+//   - At least one DependencySummary: +0.1
+//   - LLM Insight present (live or cached): +0.5
+func computeQuality(pkt *Packet) float64 {
+	var q float64
+	if pkt.RootSummary != "" {
+		q += 0.4
+	}
+	if len(pkt.DependencySummaries) > 0 {
+		q += 0.1
+	}
+	if pkt.Insight != "" {
+		q += 0.5
+	}
+	if q > 1.0 {
+		q = 1.0
+	}
+	return q
 }
