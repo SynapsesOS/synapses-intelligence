@@ -56,6 +56,18 @@ CREATE TABLE IF NOT EXISTS context_patterns (
 CREATE INDEX IF NOT EXISTS idx_patterns_trigger    ON context_patterns(trigger);
 CREATE INDEX IF NOT EXISTS idx_patterns_confidence ON context_patterns(confidence DESC);
 
+-- Caches LLM-generated insight per (node_id, phase). TTL: 6 hours.
+-- Avoids repeat LLM calls for unchanged code during the same work session.
+CREATE TABLE IF NOT EXISTS insight_cache (
+	node_id    TEXT NOT NULL,
+	phase      TEXT NOT NULL,
+	insight    TEXT NOT NULL,
+	concerns   TEXT NOT NULL DEFAULT '[]',
+	cached_at  TEXT NOT NULL,
+	PRIMARY KEY (node_id, phase)
+);
+CREATE INDEX IF NOT EXISTS idx_insight_node ON insight_cache(node_id);
+
 CREATE TABLE IF NOT EXISTS decision_log (
 	id               TEXT PRIMARY KEY,
 	agent_id         TEXT NOT NULL DEFAULT '',
@@ -107,15 +119,31 @@ func (s *Store) pruneOldData() {
 	now := time.Now().UTC()
 	// Prune decision log entries older than 30 days.
 	cutoff30d := now.Add(-30 * 24 * time.Hour).Format(time.RFC3339)
-	s.db.Exec(`DELETE FROM decision_log WHERE created_at < ?`, cutoff30d)
+	if _, err := s.db.Exec(`DELETE FROM decision_log WHERE created_at < ?`, cutoff30d); err != nil {
+		fmt.Fprintf(os.Stderr, "brain store: prune decision_log: %v\n", err)
+	}
 	// Prune weak, stale patterns (seen < 2 times AND older than 14 days).
 	cutoff14d := now.Add(-14 * 24 * time.Hour).Format(time.RFC3339)
-	s.db.Exec(`DELETE FROM context_patterns WHERE co_count < 2 AND updated_at < ?`, cutoff14d)
+	if _, err := s.db.Exec(`DELETE FROM context_patterns WHERE co_count < 2 AND updated_at < ?`, cutoff14d); err != nil {
+		fmt.Fprintf(os.Stderr, "brain store: prune context_patterns: %v\n", err)
+	}
+	// Prune insight cache entries older than 6 hours (stale insight).
+	cutoff6h := now.Add(-6 * time.Hour).Format(time.RFC3339)
+	if _, err := s.db.Exec(`DELETE FROM insight_cache WHERE cached_at < ?`, cutoff6h); err != nil {
+		fmt.Fprintf(os.Stderr, "brain store: prune insight_cache: %v\n", err)
+	}
+	// Prune violation cache entries older than 7 days (rules can change).
+	cutoff7d := now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)
+	if _, err := s.db.Exec(`DELETE FROM violation_cache WHERE cached_at < ?`, cutoff7d); err != nil {
+		fmt.Fprintf(os.Stderr, "brain store: prune violation_cache: %v\n", err)
+	}
 }
 
 // --- Semantic Summaries ---
 
 // UpsertSummary stores or updates the semantic summary and tags for a node.
+// If the node already exists (re-ingest), the insight cache is invalidated for
+// all phases — the old insight may no longer match the updated code.
 func (s *Store) UpsertSummary(nodeID, nodeName, summary string, tags []string) error {
 	if tags == nil {
 		tags = []string{}
@@ -132,7 +160,12 @@ func (s *Store) UpsertSummary(nodeID, nodeName, summary string, tags []string) e
 			updated_at = excluded.updated_at`,
 		nodeID, nodeName, summary, string(tagsJSON), now,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	// Invalidate cached insight — code has changed, old insight is stale.
+	_, _ = s.db.Exec(`DELETE FROM insight_cache WHERE node_id = ?`, nodeID)
+	return nil
 }
 
 // GetSummary returns the stored summary for a node, or "" if not found.
@@ -156,7 +189,9 @@ func (s *Store) GetSummaryWithTags(nodeID string) (summary string, tags []string
 	if err != nil {
 		return "", nil
 	}
-	json.Unmarshal([]byte(tagsJSON), &tags)
+	if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+		fmt.Fprintf(os.Stderr, "brain store: decode tags for node: %v\n", err)
+	}
 	return summary, tags
 }
 
@@ -266,6 +301,52 @@ func (s *Store) GetViolationExplanation(ruleID, sourceFile string) (explanation,
 		return "", "", false
 	}
 	return explanation, fix, true
+}
+
+// --- Insight Cache ---
+
+// InsightCacheEntry is a stored LLM-generated insight for a (node_id, phase) pair.
+type InsightCacheEntry struct {
+	Insight  string
+	Concerns []string
+}
+
+// GetInsightCache returns the cached insight for a (nodeID, phase) pair.
+// Returns ("", nil, false) if not cached or if the entry was pruned (>6h old).
+func (s *Store) GetInsightCache(nodeID, phase string) (entry InsightCacheEntry, found bool) {
+	var insight, concernsJSON string
+	err := s.db.QueryRow(
+		`SELECT insight, concerns FROM insight_cache WHERE node_id = ? AND phase = ?`,
+		nodeID, phase,
+	).Scan(&insight, &concernsJSON)
+	if err != nil {
+		return InsightCacheEntry{}, false
+	}
+	var concerns []string
+	if err := json.Unmarshal([]byte(concernsJSON), &concerns); err != nil {
+		fmt.Fprintf(os.Stderr, "brain store: decode concerns for insight cache %s/%s: %v\n", nodeID, phase, err)
+	}
+	return InsightCacheEntry{Insight: insight, Concerns: concerns}, true
+}
+
+// UpsertInsightCache stores a (nodeID, phase) → insight mapping.
+// Existing entries are replaced (insight content may have improved).
+func (s *Store) UpsertInsightCache(nodeID, phase, insight string, concerns []string) error {
+	if concerns == nil {
+		concerns = []string{}
+	}
+	concernsJSON, _ := json.Marshal(concerns)
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`
+		INSERT INTO insight_cache (node_id, phase, insight, concerns, cached_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(node_id, phase) DO UPDATE SET
+			insight   = excluded.insight,
+			concerns  = excluded.concerns,
+			cached_at = excluded.cached_at`,
+		nodeID, phase, insight, string(concernsJSON), now,
+	)
+	return err
 }
 
 // --- SDLC Config ---
@@ -463,7 +544,9 @@ func (s *Store) GetRecentDecisions(entityName string, limit int) ([]DecisionLogE
 			&e.Action, &relJSON, &e.Outcome, &e.Notes, &e.CreatedAt); err != nil {
 			continue
 		}
-		json.Unmarshal([]byte(relJSON), &e.RelatedEntities)
+		if err := json.Unmarshal([]byte(relJSON), &e.RelatedEntities); err != nil {
+			fmt.Fprintf(os.Stderr, "brain store: decode related_entities for decision %s: %v\n", e.ID, err)
+		}
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -476,6 +559,7 @@ func (s *Store) Reset() error {
 	_, err := s.db.Exec(`
 		DELETE FROM semantic_summaries;
 		DELETE FROM violation_cache;
+		DELETE FROM insight_cache;
 		DELETE FROM sdlc_config;
 		DELETE FROM context_patterns;
 		DELETE FROM decision_log;

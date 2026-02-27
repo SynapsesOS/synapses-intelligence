@@ -79,7 +79,7 @@ func (g *Guardian) Explain(ctx context.Context, req Request) (Response, error) {
 
 	result, err := parseViolation(raw)
 	if err != nil {
-		return Response{}, fmt.Errorf("parse response: %w (raw: %q)", err, truncate(raw, 100))
+		return Response{}, fmt.Errorf("parse response: %w (raw: %q)", err, llm.Truncate(raw, 100))
 	}
 
 	// Cache for future calls with the same (rule, file) pair.
@@ -108,7 +108,7 @@ func (g *Guardian) buildPrompt(req Request) string {
 }
 
 func parseViolation(raw string) (Response, error) {
-	raw = extractJSON(raw)
+	raw = llm.ExtractJSON(raw)
 	var result violationJSON
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
 		return Response{}, fmt.Errorf("unmarshal: %w", err)
@@ -121,30 +121,4 @@ func parseViolation(raw string) (Response, error) {
 		Explanation: explanation,
 		Fix:         strings.TrimSpace(result.Fix),
 	}, nil
-}
-
-func extractJSON(s string) string {
-	s = strings.TrimSpace(s)
-	if idx := strings.Index(s, "```"); idx >= 0 {
-		s = s[idx:]
-		s = strings.TrimPrefix(s, "```json")
-		s = strings.TrimPrefix(s, "```")
-		if end := strings.Index(s, "```"); end >= 0 {
-			s = s[:end]
-		}
-	}
-	if start := strings.Index(s, "{"); start >= 0 {
-		s = s[start:]
-	}
-	if end := strings.LastIndex(s, "}"); end >= 0 {
-		s = s[:end+1]
-	}
-	return strings.TrimSpace(s)
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }

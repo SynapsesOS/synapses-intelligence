@@ -241,3 +241,68 @@ func TestBuild_EmptySnapshot_NoErrors(t *testing.T) {
 		t.Fatal("Build returned nil on empty request")
 	}
 }
+
+func TestBuild_PacketQuality_NoData(t *testing.T) {
+	b, _ := newTestBuilder(t, "")
+	pkt, err := b.Build(context.Background(), Request{
+		Phase:       sdlc.PhaseDevelopment,
+		QualityMode: sdlc.ModeStandard,
+		RootName:    "UnknownEntity",
+	})
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	if pkt.PacketQuality != 0.0 {
+		t.Errorf("PacketQuality with no data want 0.0, got %f", pkt.PacketQuality)
+	}
+}
+
+func TestBuild_PacketQuality_WithSummary(t *testing.T) {
+	b, st := newTestBuilder(t, "")
+	st.UpsertSummary("node:svc:Foo", "Foo", "Does the foo thing.", []string{})
+
+	pkt, err := b.Build(context.Background(), Request{
+		Phase:       sdlc.PhaseDevelopment,
+		QualityMode: sdlc.ModeStandard,
+		RootNodeID:  "node:svc:Foo",
+		RootName:    "Foo",
+	})
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	// Root summary present → 0.4; no dep summaries, no insight.
+	if pkt.PacketQuality != 0.4 {
+		t.Errorf("PacketQuality with root summary want 0.4, got %f", pkt.PacketQuality)
+	}
+}
+
+func TestBuild_InsightCache_HitSkipsLLM(t *testing.T) {
+	// Builder with a real mock LLM (to ensure LLM is NOT called on cache hit).
+	b, st := newTestBuilder(t, `{"insight": "should not appear", "concerns": []}`)
+
+	// Real-world order: ingest first, then cache the insight.
+	// UpsertSummary invalidates insight cache, so it must come before UpsertInsightCache.
+	st.UpsertSummary("node:svc:Bar", "Bar", "Does bar.", []string{})
+	st.UpsertInsightCache("node:svc:Bar", sdlc.PhaseDevelopment, "Cached insight.", []string{"cached concern"})
+
+	pkt, err := b.Build(context.Background(), Request{
+		Phase:       sdlc.PhaseDevelopment,
+		QualityMode: sdlc.ModeStandard,
+		EnableLLM:   true,
+		RootNodeID:  "node:svc:Bar",
+		RootName:    "Bar",
+	})
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	if pkt.Insight != "Cached insight." {
+		t.Errorf("expected cached insight, got %q", pkt.Insight)
+	}
+	if len(pkt.Concerns) == 0 || pkt.Concerns[0] != "cached concern" {
+		t.Errorf("expected cached concerns, got %v", pkt.Concerns)
+	}
+	// Cache hit means LLMUsed should be false.
+	if pkt.LLMUsed {
+		t.Error("LLMUsed should be false on insight cache hit")
+	}
+}

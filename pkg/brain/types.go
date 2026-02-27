@@ -21,8 +21,9 @@ type IngestRequest struct {
 
 // IngestResponse is returned after summarization.
 type IngestResponse struct {
-	NodeID  string `json:"node_id"`
-	Summary string `json:"summary"` // 1-sentence intent summary
+	NodeID  string   `json:"node_id"`
+	Summary string   `json:"summary"`          // 1-sentence intent summary
+	Tags    []string `json:"tags,omitempty"`   // 1-3 domain labels, e.g. ["auth","http"]
 }
 
 // --- Enrich (Context Enricher) ---
@@ -56,6 +57,9 @@ type EnrichResponse struct {
 	// Summaries maps nodeID → 1-sentence summary for nodes that have been ingested.
 	// These are loaded from brain.sqlite (no LLM call needed — fast lookup).
 	Summaries map[string]string `json:"summaries"`
+	// LLMUsed is true when the LLM was called to generate the Insight field.
+	// False means Insight is empty (LLM unavailable, feature disabled, or timed out).
+	LLMUsed bool `json:"llm_used"`
 }
 
 // --- ExplainViolation (Rule Guardian) ---
@@ -172,6 +176,15 @@ type ContextPacket struct {
 
 	// Section 7: Phase Guidance — what the agent should do next
 	PhaseGuidance string `json:"phase_guidance,omitempty"`
+
+	// LLMUsed indicates whether a live LLM call was made during packet assembly.
+	// False means all data came from brain.sqlite (sub-millisecond path).
+	LLMUsed bool `json:"llm_used,omitempty"`
+
+	// PacketQuality is a 0.0–1.0 heuristic reflecting how complete this packet is.
+	// 0.0 = no summaries ingested yet; 0.5 = summaries present, no insight; 1.0 = full.
+	// Agents can use this to decide whether to request a follow-up LLM enrichment pass.
+	PacketQuality float64 `json:"packet_quality"`
 }
 
 // ConstraintItem is a single architectural rule the agent must respect.
@@ -212,45 +225,44 @@ type PatternHint struct {
 // --- Context Packet request/input types ---
 
 // ContextPacketRequest is the input to Brain.BuildContextPacket().
+// All fields are optional — empty Phase/QualityMode fall back to the stored project config.
 type ContextPacketRequest struct {
-	AgentID     string
-	Snapshot    SynapsesSnapshotInput
-	Phase       SDLCPhase   // "" = use stored project phase
-	QualityMode QualityMode // "" = use stored project mode
-	EnableLLM   bool        // true = allow LLM insight generation (adds ~2s)
+	AgentID     string               `json:"agent_id,omitempty"`
+	Snapshot    SynapsesSnapshotInput `json:"snapshot"`
+	Phase       SDLCPhase            `json:"phase,omitempty"`        // "" = use stored project phase
+	QualityMode QualityMode          `json:"quality_mode,omitempty"` // "" = use stored project mode
+	EnableLLM   bool                 `json:"enable_llm"`             // true = allow LLM insight (~2s)
 }
 
 // SynapsesSnapshotInput carries the raw structural data from a Synapses get_context call.
 // Synapses (or the HTTP caller) populates this; the Brain uses it to build the packet.
 type SynapsesSnapshotInput struct {
-	RootNodeID   string
-	RootName     string
-	RootType     string
-	RootFile     string   // used for constraint file pattern matching
-	CalleeNames  []string // direct callees (what root calls)
-	CallerNames  []string // direct callers (what calls root)
-	RelatedNames []string // transitive neighbors
-	// ApplicableRules are the architectural rules whose file pattern matches RootFile.
-	ApplicableRules []RuleInput
-	// ActiveClaims are work claims from other agents (for team coordination section).
-	ActiveClaims []ClaimInput
-	TaskContext  string
-	TaskID       string
+	RootNodeID      string     `json:"root_node_id,omitempty"`
+	RootName        string     `json:"root_name"`
+	RootType        string     `json:"root_type,omitempty"`
+	RootFile        string     `json:"root_file,omitempty"`      // used for constraint hint lookups
+	CalleeNames     []string   `json:"callee_names,omitempty"`   // what root calls directly
+	CallerNames     []string   `json:"caller_names,omitempty"`   // what calls root directly
+	RelatedNames    []string   `json:"related_names,omitempty"`  // transitive neighbours
+	ApplicableRules []RuleInput  `json:"applicable_rules,omitempty"` // rules whose pattern matches RootFile
+	ActiveClaims    []ClaimInput `json:"active_claims,omitempty"`  // work claims from other agents
+	TaskContext     string     `json:"task_context,omitempty"`
+	TaskID          string     `json:"task_id,omitempty"`
 }
 
 // RuleInput is a single architectural rule reference.
 type RuleInput struct {
-	RuleID      string
-	Severity    string
-	Description string
+	RuleID      string `json:"rule_id"`
+	Severity    string `json:"severity"`
+	Description string `json:"description"`
 }
 
 // ClaimInput is a single work claim from another agent.
 type ClaimInput struct {
-	AgentID   string
-	Scope     string
-	ScopeType string
-	ExpiresAt string // RFC3339
+	AgentID   string `json:"agent_id"`
+	Scope     string `json:"scope"`
+	ScopeType string `json:"scope_type"`
+	ExpiresAt string `json:"expires_at,omitempty"` // RFC3339
 }
 
 // --- Decision log (learning loop) ---
