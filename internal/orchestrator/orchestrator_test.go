@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/synapses/synapses-intelligence/internal/llm"
+	"github.com/Divish1032/synapses-intelligence/internal/llm"
 )
 
 func TestCoordinate_Success(t *testing.T) {

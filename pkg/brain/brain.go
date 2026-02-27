@@ -2,17 +2,18 @@ package brain
 
 import (
 	"context"
+	"io"
 	"time"
 
-	"github.com/synapses/synapses-intelligence/config"
-	"github.com/synapses/synapses-intelligence/internal/contextbuilder"
-	"github.com/synapses/synapses-intelligence/internal/enricher"
-	"github.com/synapses/synapses-intelligence/internal/guardian"
-	"github.com/synapses/synapses-intelligence/internal/ingestor"
-	"github.com/synapses/synapses-intelligence/internal/llm"
-	"github.com/synapses/synapses-intelligence/internal/orchestrator"
-	"github.com/synapses/synapses-intelligence/internal/sdlc"
-	"github.com/synapses/synapses-intelligence/internal/store"
+	"github.com/Divish1032/synapses-intelligence/config"
+	"github.com/Divish1032/synapses-intelligence/internal/contextbuilder"
+	"github.com/Divish1032/synapses-intelligence/internal/enricher"
+	"github.com/Divish1032/synapses-intelligence/internal/guardian"
+	"github.com/Divish1032/synapses-intelligence/internal/ingestor"
+	"github.com/Divish1032/synapses-intelligence/internal/llm"
+	"github.com/Divish1032/synapses-intelligence/internal/orchestrator"
+	"github.com/Divish1032/synapses-intelligence/internal/sdlc"
+	"github.com/Divish1032/synapses-intelligence/internal/store"
 )
 
 // Brain is the public interface for the Thinking Brain.
@@ -46,6 +47,11 @@ type Brain interface {
 
 	// ModelName returns the configured LLM model tag.
 	ModelName() string
+
+	// EnsureModel checks if the configured model is present locally; if not,
+	// it pulls it from the Ollama registry, streaming progress to w.
+	// Returns nil when the model is ready, an error if the pull fails.
+	EnsureModel(ctx context.Context, w io.Writer) error
 
 	// --- v0.2.0: Context Packet, SDLC, Learning ---
 
@@ -229,6 +235,13 @@ func (b *impl) Available() bool {
 
 func (b *impl) ModelName() string {
 	return b.llm.ModelName()
+}
+
+func (b *impl) EnsureModel(ctx context.Context, w io.Writer) error {
+	if b.llm.ModelPulled(ctx) {
+		return nil
+	}
+	return b.llm.PullModel(ctx, w)
 }
 
 func (b *impl) BuildContextPacket(ctx context.Context, req ContextPacketRequest) (*ContextPacket, error) {

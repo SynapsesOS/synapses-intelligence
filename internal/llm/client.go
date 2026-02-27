@@ -2,7 +2,10 @@
 // All LLM calls use structured JSON output to ensure deterministic, fast parsing.
 package llm
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 // LLMClient is the interface for all LLM backends.
 // Implementations: OllamaClient (production), MockClient (tests).
@@ -16,4 +19,11 @@ type LLMClient interface {
 
 	// ModelName returns the configured model identifier.
 	ModelName() string
+
+	// ModelPulled returns true if the model is already present locally
+	// (no download needed).
+	ModelPulled(ctx context.Context) bool
+
+	// PullModel downloads the model, streaming progress to w.
+	PullModel(ctx context.Context, w io.Writer) error
 }
