@@ -14,8 +14,8 @@ import (
 // OllamaClient calls the Ollama REST API at POST /api/generate.
 // It keeps a reusable http.Client for connection pooling.
 type OllamaClient struct {
-	baseURL   string
-	model     string
+	baseURL    string
+	model      string
 	httpClient *http.Client
 }
 
@@ -44,8 +44,8 @@ type ollamaRequest struct {
 }
 
 type ollamaOptions struct {
-	Temperature float64 `json:"temperature"`
-	NumPredict  int     `json:"num_predict"` // max output tokens
+	Temperature float64  `json:"temperature"`
+	NumPredict  int      `json:"num_predict"` // max output tokens
 	Stop        []string `json:"stop,omitempty"`
 }
 

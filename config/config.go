@@ -58,12 +58,12 @@ type BrainConfig struct {
 func DefaultConfig() BrainConfig {
 	home, _ := os.UserHomeDir()
 	return BrainConfig{
-		Enabled:     false,
-		OllamaURL:   "http://localhost:11434",
-		Model:       "qwen2.5-coder:1.5b",
-		TimeoutMS:   3000,
-		DBPath:      filepath.Join(home, ".synapses", "brain.sqlite"),
-		Port:        11435,
+		Enabled:         false,
+		OllamaURL:       "http://localhost:11434",
+		Model:           "qwen2.5-coder:1.5b",
+		TimeoutMS:       3000,
+		DBPath:          filepath.Join(home, ".synapses", "brain.sqlite"),
+		Port:            11435,
 		Ingest:          true,
 		Enrich:          true,
 		Guardian:        true,

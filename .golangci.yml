@@ -1,0 +1,29 @@
+version: "2"
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - misspell
+    - revive
+  disable:
+    - errcheck
+  settings:
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+
+formatters:
+  enable:
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Divish1032/synapses-intelligence
+
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0

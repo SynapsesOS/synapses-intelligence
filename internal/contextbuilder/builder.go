@@ -71,10 +71,10 @@ type Packet struct {
 	//   0.5 = root summary present, no LLM insight
 	//   0.0 = empty packet (no summaries ingested yet)
 	PacketQuality float64
-	TeamStatus        []AgentItem
-	Gate              sdlc.Gate
-	PatternHints      []PatternItem
-	PhaseGuidance     string
+	TeamStatus    []AgentItem
+	Gate          sdlc.Gate
+	PatternHints  []PatternItem
+	PhaseGuidance string
 }
 
 // RuleRef is a single architectural rule reference from the Synapses snapshot.

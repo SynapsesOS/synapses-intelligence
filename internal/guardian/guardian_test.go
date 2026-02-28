@@ -110,7 +110,7 @@ func (m *countingMock) Generate(_ context.Context, _ string) (string, error) {
 	*m.count++
 	return m.response, nil
 }
-func (m *countingMock) Available(_ context.Context) bool             { return true }
-func (m *countingMock) ModelName() string                            { return "mock" }
-func (m *countingMock) ModelPulled(_ context.Context) bool           { return true }
+func (m *countingMock) Available(_ context.Context) bool               { return true }
+func (m *countingMock) ModelName() string                              { return "mock" }
+func (m *countingMock) ModelPulled(_ context.Context) bool             { return true }
 func (m *countingMock) PullModel(_ context.Context, _ io.Writer) error { return nil }
