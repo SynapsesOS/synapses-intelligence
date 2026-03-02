@@ -15,13 +15,18 @@ type BrainConfig struct {
 	// OllamaURL is the base URL of the Ollama server. Default: "http://localhost:11434".
 	OllamaURL string `json:"ollama_url,omitempty"`
 
-	// Model is the Ollama model tag to use.
-	// Default: "qwen2.5-coder:1.5b" (~900MB, fits in 4GB system RAM).
-	// Upgrade options:
-	//   "qwen3:1.7b"  — recommended when available (~1.1GB)
-	//   "qwen3:4b"    — power user, needs 8GB+ (~2.5GB)
-	//   "qwen3:8b"    — enterprise, needs 16GB+ (~5GB)
+	// Model is the primary Ollama model tag for enrichment and insights.
+	// Default: "qwen2.5-coder:7b" (~4.5GB, needs 6GB VRAM or 8GB RAM).
+	// Downgrade options for low-resource systems:
+	//   "qwen2.5-coder:1.5b" — fast, fits in 4GB RAM (~900MB)
+	//   "qwen2.5-coder:3b"   — balanced, fits in 6GB RAM (~1.9GB)
 	Model string `json:"model,omitempty"`
+
+	// FastModel is the Ollama model tag for bulk ingestion (summarization).
+	// Bulk ingest runs on every node at index time; use a smaller, faster model.
+	// Default: "qwen2.5-coder:1.5b" (~900MB).
+	// Set to "" to use Model for both ingest and enrichment.
+	FastModel string `json:"fast_model,omitempty"`
 
 	// TimeoutMS is the per-request LLM timeout in milliseconds. Default: 3000.
 	TimeoutMS int `json:"timeout_ms,omitempty"`
@@ -60,7 +65,8 @@ func DefaultConfig() BrainConfig {
 	return BrainConfig{
 		Enabled:         false,
 		OllamaURL:       "http://localhost:11434",
-		Model:           "qwen2.5-coder:1.5b",
+		Model:           "qwen2.5-coder:7b",
+		FastModel:       "qwen2.5-coder:1.5b",
 		TimeoutMS:       30000,
 		DBPath:          filepath.Join(home, ".synapses", "brain.sqlite"),
 		Port:            11435,
@@ -119,7 +125,10 @@ func (c *BrainConfig) applyDefaults() {
 		c.OllamaURL = "http://localhost:11434"
 	}
 	if c.Model == "" {
-		c.Model = "qwen2.5-coder:1.5b"
+		c.Model = "qwen2.5-coder:7b"
+	}
+	if c.FastModel == "" {
+		c.FastModel = "qwen2.5-coder:1.5b"
 	}
 	if c.TimeoutMS <= 0 {
 		c.TimeoutMS = 30000

@@ -102,7 +102,16 @@ func New(cfg config.BrainConfig) Brain {
 		return &NullBrain{}
 	}
 
+	// Primary model: used for enrichment and insights (7b default).
 	ollamaClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.Model, cfg.TimeoutMS)
+
+	// Fast model: used for bulk ingest/summarization (1.5b default).
+	// Falls back to primary model if FastModel is unset.
+	fastModel := cfg.FastModel
+	if fastModel == "" {
+		fastModel = cfg.Model
+	}
+	fastClient := llm.NewOllamaClient(cfg.OllamaURL, fastModel, cfg.TimeoutMS)
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
@@ -119,7 +128,7 @@ func New(cfg config.BrainConfig) Brain {
 		cfg:          cfg,
 		llm:          ollamaClient,
 		store:        st,
-		ingestor:     ingestor.New(ollamaClient, st, timeout),
+		ingestor:     ingestor.New(fastClient, st, timeout),
 		enricher:     enr,
 		guardian:     guardian.New(ollamaClient, st, timeout),
 		orchestrator: orchestrator.New(ollamaClient, timeout),
@@ -264,6 +273,8 @@ func (b *impl) BuildContextPacket(ctx context.Context, req ContextPacketRequest)
 		ActiveClaims:    toBuilderClaims(req.Snapshot.ActiveClaims),
 		TaskContext:     req.Snapshot.TaskContext,
 		TaskID:          req.Snapshot.TaskID,
+		HasTests:        req.Snapshot.HasTests,
+		FanIn:           req.Snapshot.FanIn,
 	})
 	if err != nil || pkt == nil {
 		return nil, err
@@ -355,6 +366,7 @@ func toContextPacket(p *contextbuilder.Packet) *ContextPacket {
 		PhaseGuidance:       p.PhaseGuidance,
 		LLMUsed:             p.LLMUsed,
 		PacketQuality:       p.PacketQuality,
+		GraphWarnings:       p.GraphWarnings,
 		QualityGate: QualityGate{
 			RequireTests:   p.Gate.RequireTests,
 			RequireDocs:    p.Gate.RequireDocs,

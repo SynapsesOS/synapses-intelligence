@@ -20,16 +20,21 @@ import (
 )
 
 const (
-	// maxNamesInPrompt limits how many callee/caller names are sent to the LLM
-	// to keep prompts short for 1-2B models.
-	maxNamesInPrompt = 5
+	// maxNamesInPrompt limits how many callee/caller names are sent to the LLM.
+	// 10 is appropriate for 7b models; reduce to 5 for 1-2b models.
+	maxNamesInPrompt = 10
 
-	promptTemplate = `Describe this code entity's architectural role in exactly TWO sentences.
-Output ONLY valid JSON with no other text: {"insight": "...", "concerns": ["...", "..."]}
+	promptTemplate = `You are a code architecture analyst. Analyze this code entity and provide:
+1. A precise 2-sentence description of its architectural role and responsibility
+2. 1-3 specific concerns an engineer should know before modifying it
+
+Output ONLY valid JSON: {"insight": "...", "concerns": ["...", "..."]}
 
 Entity: %s (%s)
 Calls: %s
-Called by: %s%s`
+Called by: %s%s
+
+Focus on: architectural patterns, coupling risks, invariants, and design intent.`
 )
 
 // Request carries the carved subgraph data for enrichment.

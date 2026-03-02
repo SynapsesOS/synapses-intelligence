@@ -10,6 +10,8 @@ package contextbuilder
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Divish1032/synapses-intelligence/internal/enricher"
@@ -75,6 +77,10 @@ type Packet struct {
 	Gate          sdlc.Gate
 	PatternHints  []PatternItem
 	PhaseGuidance string
+
+	// GraphWarnings are actionable warnings derived from graph topology.
+	// Always populated (no LLM required) — deterministic, high-signal guidance.
+	GraphWarnings []string
 }
 
 // RuleRef is a single architectural rule reference from the Synapses snapshot.
@@ -111,6 +117,10 @@ type Request struct {
 	ActiveClaims    []ClaimRef
 	TaskContext     string
 	TaskID          string
+
+	// Graph topology signals (populated by synapses core):
+	HasTests bool // whether *_test.go exists for root file
+	FanIn    int  // total caller count (may exceed len(CallerNames) when capped)
 }
 
 // Builder assembles a Context Packet from a Synapses snapshot and brain data.
@@ -210,6 +220,9 @@ func (b *Builder) Build(ctx context.Context, req Request) (*Packet, error) {
 	if sections.PhaseGuidance {
 		pkt.PhaseGuidance = sdlc.PhaseGuidance(phase, mode)
 	}
+
+	// Section 8: Graph-derived warnings (deterministic, always populated).
+	pkt.GraphWarnings = buildGraphWarnings(req)
 
 	// Compute packet quality: 0.0 (empty) → 0.5 (summaries) → 1.0 (full with insight).
 	pkt.PacketQuality = computeQuality(pkt)
@@ -321,6 +334,39 @@ func toPatternItems(patterns []store.ContextPattern) []PatternItem {
 		}
 	}
 	return out
+}
+
+// buildGraphWarnings produces actionable warnings from graph topology signals.
+// These are deterministic — no LLM required.
+func buildGraphWarnings(req Request) []string {
+	var warnings []string
+
+	// Blast radius warning: high fanin means changes here have wide impact.
+	fanin := req.FanIn
+	if fanin == 0 {
+		fanin = len(req.CallerNames) // fall back to slice length if FanIn not set
+	}
+	if fanin > 5 {
+		callerList := ""
+		if len(req.CallerNames) > 0 {
+			cap := req.CallerNames
+			if len(cap) > 5 {
+				cap = cap[:5]
+			}
+			callerList = " (e.g. " + strings.Join(cap, ", ") + ")"
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"⚠ High blast radius: %d callers%s — run get_impact before modifying",
+			fanin, callerList,
+		))
+	}
+
+	// Test coverage signal.
+	if !req.HasTests && req.RootFile != "" {
+		warnings = append(warnings, "⚠ No test file found for this entity — consider adding tests before changing")
+	}
+
+	return warnings
 }
 
 // computeQuality returns a 0.0–1.0 heuristic for how complete a packet is.

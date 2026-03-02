@@ -187,6 +187,11 @@ type ContextPacket struct {
 	// 0.0 = no summaries ingested yet; 0.5 = summaries present, no insight; 1.0 = full.
 	// Agents can use this to decide whether to request a follow-up LLM enrichment pass.
 	PacketQuality float64 `json:"packet_quality"`
+
+	// GraphWarnings are actionable warnings derived from graph topology.
+	// Examples: "High blast radius (12 callers)", "No tests found for this file".
+	// These supplement the LLM Insight with deterministic, always-available guidance.
+	GraphWarnings []string `json:"graph_warnings,omitempty"`
 }
 
 // ConstraintItem is a single architectural rule the agent must respect.
@@ -250,6 +255,8 @@ type SynapsesSnapshotInput struct {
 	ActiveClaims    []ClaimInput `json:"active_claims,omitempty"`    // work claims from other agents
 	TaskContext     string       `json:"task_context,omitempty"`
 	TaskID          string       `json:"task_id,omitempty"`
+	HasTests        bool         `json:"has_tests"`   // whether *_test.go exists for root file
+	FanIn           int          `json:"fan_in"`      // total caller count (may exceed len(CallerNames))
 }
 
 // RuleInput is a single architectural rule reference.

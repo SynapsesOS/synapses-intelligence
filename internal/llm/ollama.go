@@ -65,7 +65,7 @@ func (c *OllamaClient) Generate(ctx context.Context, prompt string) (string, err
 		Stream: false,
 		Options: ollamaOptions{
 			Temperature: 0.1, // near-deterministic for structured JSON
-			NumPredict:  250, // enough for JSON insight (~150 tokens) with headroom
+			NumPredict:  400, // enough for JSON insight with headroom for 7b verbosity
 			// No stop tokens: models wrap JSON in markdown fences and stop tokens
 			// fire immediately (e.g. "```" fires on the opening fence), producing
 			// empty responses. ExtractJSON handles all formatting variants.
