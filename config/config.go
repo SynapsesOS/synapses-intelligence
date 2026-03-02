@@ -61,7 +61,7 @@ func DefaultConfig() BrainConfig {
 		Enabled:         false,
 		OllamaURL:       "http://localhost:11434",
 		Model:           "qwen2.5-coder:1.5b",
-		TimeoutMS:       3000,
+		TimeoutMS:       30000,
 		DBPath:          filepath.Join(home, ".synapses", "brain.sqlite"),
 		Port:            11435,
 		Ingest:          true,
@@ -122,7 +122,7 @@ func (c *BrainConfig) applyDefaults() {
 		c.Model = "qwen2.5-coder:1.5b"
 	}
 	if c.TimeoutMS <= 0 {
-		c.TimeoutMS = 3000
+		c.TimeoutMS = 30000
 	}
 	if c.Port <= 0 {
 		c.Port = 11435

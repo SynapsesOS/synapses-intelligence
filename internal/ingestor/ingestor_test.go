@@ -71,17 +71,22 @@ func TestSummarize_LLMUnavailable(t *testing.T) {
 	}
 }
 
-func TestSummarize_BadJSON(t *testing.T) {
-	mock := llm.NewMockClient(`not valid json at all`)
+func TestSummarize_PlainTextFallback(t *testing.T) {
+	// Small models sometimes return plain text instead of JSON.
+	// The ingestor should accept the plain text as the summary.
+	mock := llm.NewMockClient(`This function performs authentication validation.`)
 	st := newTestStore(t)
 	ing := New(mock, st, 3*time.Second)
 
-	_, err := ing.Summarize(context.Background(), Request{
+	resp, err := ing.Summarize(context.Background(), Request{
 		NodeID: "node:x",
 		Code:   "func X() {}",
 	})
-	if err == nil {
-		t.Fatal("expected parse error for bad JSON, got nil")
+	if err != nil {
+		t.Fatalf("expected plain-text fallback to succeed, got error: %v", err)
+	}
+	if resp.Summary == "" {
+		t.Fatal("expected non-empty summary from plain-text fallback")
 	}
 }
 

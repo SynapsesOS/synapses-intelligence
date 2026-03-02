@@ -116,18 +116,32 @@ func (ing *Ingestor) buildPrompt(req Request) string {
 
 // parseSummary extracts the summary and tags from the LLM JSON response.
 // Handles cases where the model wraps the JSON in markdown code fences.
+// Falls back to treating the full response as a plain-text summary when
+// the model ignores the JSON format instruction (common with small models).
 // Tags are optional — returns nil if the model did not include them.
 func parseSummary(raw string) (summary string, tags []string, err error) {
-	raw = llm.ExtractJSON(raw)
+	extracted := llm.ExtractJSON(raw)
 	var result summaryJSON
-	if err = json.Unmarshal([]byte(raw), &result); err != nil {
-		return "", nil, fmt.Errorf("unmarshal: %w", err)
+	if jsonErr := json.Unmarshal([]byte(extracted), &result); jsonErr == nil {
+		summary = strings.TrimSpace(result.Summary)
+		if summary != "" {
+			return summary, result.Tags, nil
+		}
 	}
-	summary = strings.TrimSpace(result.Summary)
-	if summary == "" {
-		return "", nil, fmt.Errorf("empty summary in response")
+	// JSON parse failed or summary field was empty — use raw text as the summary.
+	// Strip any markdown fences and collapse whitespace.
+	fallback := strings.TrimSpace(raw)
+	fallback = strings.TrimPrefix(fallback, "```")
+	fallback = strings.TrimSuffix(fallback, "```")
+	fallback = strings.TrimSpace(fallback)
+	if fallback == "" {
+		return "", nil, fmt.Errorf("empty response from LLM")
 	}
-	return summary, result.Tags, nil
+	// Limit to first 300 chars to keep summaries concise.
+	if len(fallback) > 300 {
+		fallback = fallback[:300] + "…"
+	}
+	return fallback, nil, nil
 }
 
 // truncateCode caps the code snippet at maxCodeChars runes.

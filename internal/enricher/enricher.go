@@ -117,16 +117,27 @@ func (e *Enricher) buildPrompt(req Request) string {
 }
 
 func parseInsight(raw string) (Response, error) {
-	raw = llm.ExtractJSON(raw)
+	extracted := llm.ExtractJSON(raw)
 	var result insightJSON
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		return Response{}, fmt.Errorf("unmarshal: %w", err)
+	if jsonErr := json.Unmarshal([]byte(extracted), &result); jsonErr == nil {
+		insight := strings.TrimSpace(result.Insight)
+		if insight != "" {
+			return Response{Insight: insight, Concerns: result.Concerns, LLMUsed: true}, nil
+		}
 	}
-	insight := strings.TrimSpace(result.Insight)
-	if insight == "" {
-		return Response{}, fmt.Errorf("empty insight in response")
+	// JSON parse failed or insight field was empty — use raw text as the insight.
+	// This handles small models that ignore JSON format instructions.
+	fallback := strings.TrimSpace(raw)
+	fallback = strings.TrimPrefix(fallback, "```")
+	fallback = strings.TrimSuffix(fallback, "```")
+	fallback = strings.TrimSpace(fallback)
+	if fallback == "" {
+		return Response{}, fmt.Errorf("empty response from LLM")
 	}
-	return Response{Insight: insight, Concerns: result.Concerns, LLMUsed: true}, nil
+	if len(fallback) > 400 {
+		fallback = fallback[:400] + "…"
+	}
+	return Response{Insight: fallback, LLMUsed: true}, nil
 }
 
 // joinNames joins up to n names into a comma-separated string.

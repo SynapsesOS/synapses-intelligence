@@ -5,6 +5,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.3.1] — 2026-03-02
+
+### Fixed
+
+- **OllamaClient stop tokens caused silent empty enricher responses**: `Generate()`
+  had stop tokens `["\n\n", "```"]`. The enricher prompt causes `qwen2.5-coder:1.5b`
+  to begin output with ` ```json`, which immediately triggers the `"```"` stop token
+  and returns an empty string before any content is produced. All LLM insight
+  generation silently failed — `context-packet` returned `packet_quality ≤ 0.4` with
+  no insight regardless of SDLC phase. Removed both stop tokens: `ExtractJSON()`
+  already handles markdown-wrapped JSON correctly. Increased `NumPredict` 150 → 250
+  to accommodate the enricher's longer output. (`internal/llm/ollama.go`)
+
+- **Ingestor plain-text fallback**: `parseSummary` returned an error when
+  `qwen2.5-coder:1.5b` returned plain text instead of a JSON object (common with
+  small models under varied prompts). Added fallback path: if JSON parsing fails,
+  the raw response text is trimmed and used as the summary (capped at 300 chars).
+  (`internal/ingestor/ingestor.go`)
+
+- **Enricher plain-text fallback**: Same issue in `parseInsight` — model plain-text
+  responses caused the enricher to return an error, which was silently swallowed by
+  the context builder. Added identical fallback (capped at 400 chars).
+  (`internal/enricher/enricher.go`)
+
+- **Default `TimeoutMS` too short for CPU-only Ollama**: Default was 3000ms
+  (3 seconds). `qwen2.5-coder:1.5b` inference on a CPU takes 2–5+ seconds depending
+  on system load, causing intermittent `context deadline exceeded` errors on ingest
+  and enrich calls. Increased default from 3000 to 30000 (30 seconds).
+  (`config/config.go`)
+
+---
+
 ## [0.3.0] — 2026-02-27
 
 ### Added
