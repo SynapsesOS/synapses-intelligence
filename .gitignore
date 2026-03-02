@@ -1,0 +1,52 @@
+# Binaries
+bin/
+dist/
+/brain
+brain.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.html
+coverage.out
+
+# Build cache
+/tmp/
+
+# Go workspace
+go.work
+go.work.sum
+
+# Dependencies
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Config files with secrets (use .example variants)
+synapses.json
+brain.json
+.env
+.env.local
+.env.*.local
+
+# Claude Code local settings
+.claude/
+.mcp.json

@@ -14,8 +14,8 @@ import (
 // OllamaClient calls the Ollama REST API at POST /api/generate.
 // It keeps a reusable http.Client for connection pooling.
 type OllamaClient struct {
-	baseURL   string
-	model     string
+	baseURL    string
+	model      string
 	httpClient *http.Client
 }
 
@@ -44,8 +44,8 @@ type ollamaRequest struct {
 }
 
 type ollamaOptions struct {
-	Temperature float64 `json:"temperature"`
-	NumPredict  int     `json:"num_predict"` // max output tokens
+	Temperature float64  `json:"temperature"`
+	NumPredict  int      `json:"num_predict"` // max output tokens
 	Stop        []string `json:"stop,omitempty"`
 }
 
@@ -127,4 +127,92 @@ func (c *OllamaClient) Available(ctx context.Context) bool {
 // ModelName returns the configured model tag.
 func (c *OllamaClient) ModelName() string {
 	return c.model
+}
+
+// ModelPulled returns true if the configured model is already present in
+// Ollama's local model library (i.e. no pull is needed).
+func (c *OllamaClient) ModelPulled(ctx context.Context) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/tags", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return false
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false
+	}
+	for _, m := range result.Models {
+		// Ollama tags may have ":latest" appended; match with or without tag.
+		if m.Name == c.model || strings.HasPrefix(m.Name, c.model+":") ||
+			strings.TrimSuffix(m.Name, ":latest") == strings.TrimSuffix(c.model, ":latest") {
+			return true
+		}
+	}
+	return false
+}
+
+// PullModel pulls the configured model from the Ollama registry, streaming
+// progress lines to w. Pass os.Stderr for terminal feedback.
+// Blocks until the pull completes or ctx is cancelled.
+func (c *OllamaClient) PullModel(ctx context.Context, w io.Writer) error {
+	body, err := json.Marshal(map[string]any{"name": c.model, "stream": true})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/api/pull", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Pull can take minutes; use a long timeout client.
+	pullCli := &http.Client{Timeout: 30 * time.Minute}
+	resp, err := pullCli.Do(req)
+	if err != nil {
+		return fmt.Errorf("pull request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("ollama pull returned %d: %s", resp.StatusCode, b)
+	}
+
+	// Stream newline-delimited JSON progress events.
+	dec := json.NewDecoder(resp.Body)
+	var lastStatus string
+	for {
+		var evt struct {
+			Status    string `json:"status"`
+			Total     int64  `json:"total"`
+			Completed int64  `json:"completed"`
+			Error     string `json:"error"`
+		}
+		if err := dec.Decode(&evt); err != nil {
+			break // EOF = done
+		}
+		if evt.Error != "" {
+			return fmt.Errorf("pull error: %s", evt.Error)
+		}
+		if evt.Status != lastStatus {
+			if evt.Total > 0 {
+				pct := int(float64(evt.Completed) / float64(evt.Total) * 100)
+				fmt.Fprintf(w, "\r  %-40s %3d%%", evt.Status, pct)
+			} else {
+				fmt.Fprintf(w, "\r  %-40s     ", evt.Status)
+			}
+			lastStatus = evt.Status
+		}
+	}
+	fmt.Fprintln(w) // newline after progress line
+	return nil
 }

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/synapses/synapses-intelligence/internal/llm"
+	"github.com/Divish1032/synapses-intelligence/internal/llm"
 )
 
 const promptTemplate = `Two AI agents want to work on overlapping code. Suggest how to divide the work clearly.

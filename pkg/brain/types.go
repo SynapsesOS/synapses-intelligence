@@ -22,8 +22,8 @@ type IngestRequest struct {
 // IngestResponse is returned after summarization.
 type IngestResponse struct {
 	NodeID  string   `json:"node_id"`
-	Summary string   `json:"summary"`          // 1-sentence intent summary
-	Tags    []string `json:"tags,omitempty"`   // 1-3 domain labels, e.g. ["auth","http"]
+	Summary string   `json:"summary"`        // 1-sentence intent summary
+	Tags    []string `json:"tags,omitempty"` // 1-3 domain labels, e.g. ["auth","http"]
 }
 
 // --- Enrich (Context Enricher) ---
@@ -120,6 +120,7 @@ type CoordinateResponse struct {
 // SDLCPhase identifies the current stage in the software development lifecycle.
 type SDLCPhase string
 
+// SDLC phase constants.
 const (
 	PhaseUnknown     SDLCPhase = ""
 	PhasePlanning    SDLCPhase = "planning"
@@ -132,6 +133,7 @@ const (
 // QualityMode controls how strict the quality gate is for an agent's work.
 type QualityMode string
 
+// Quality mode constants.
 const (
 	QualityQuick      QualityMode = "quick"      // prototype: just make it work
 	QualityStandard   QualityMode = "standard"   // default: unit tests required
@@ -227,27 +229,27 @@ type PatternHint struct {
 // ContextPacketRequest is the input to Brain.BuildContextPacket().
 // All fields are optional — empty Phase/QualityMode fall back to the stored project config.
 type ContextPacketRequest struct {
-	AgentID     string               `json:"agent_id,omitempty"`
+	AgentID     string                `json:"agent_id,omitempty"`
 	Snapshot    SynapsesSnapshotInput `json:"snapshot"`
-	Phase       SDLCPhase            `json:"phase,omitempty"`        // "" = use stored project phase
-	QualityMode QualityMode          `json:"quality_mode,omitempty"` // "" = use stored project mode
-	EnableLLM   bool                 `json:"enable_llm"`             // true = allow LLM insight (~2s)
+	Phase       SDLCPhase             `json:"phase,omitempty"`        // "" = use stored project phase
+	QualityMode QualityMode           `json:"quality_mode,omitempty"` // "" = use stored project mode
+	EnableLLM   bool                  `json:"enable_llm"`             // true = allow LLM insight (~2s)
 }
 
 // SynapsesSnapshotInput carries the raw structural data from a Synapses get_context call.
 // Synapses (or the HTTP caller) populates this; the Brain uses it to build the packet.
 type SynapsesSnapshotInput struct {
-	RootNodeID      string     `json:"root_node_id,omitempty"`
-	RootName        string     `json:"root_name"`
-	RootType        string     `json:"root_type,omitempty"`
-	RootFile        string     `json:"root_file,omitempty"`      // used for constraint hint lookups
-	CalleeNames     []string   `json:"callee_names,omitempty"`   // what root calls directly
-	CallerNames     []string   `json:"caller_names,omitempty"`   // what calls root directly
-	RelatedNames    []string   `json:"related_names,omitempty"`  // transitive neighbours
+	RootNodeID      string       `json:"root_node_id,omitempty"`
+	RootName        string       `json:"root_name"`
+	RootType        string       `json:"root_type,omitempty"`
+	RootFile        string       `json:"root_file,omitempty"`        // used for constraint hint lookups
+	CalleeNames     []string     `json:"callee_names,omitempty"`     // what root calls directly
+	CallerNames     []string     `json:"caller_names,omitempty"`     // what calls root directly
+	RelatedNames    []string     `json:"related_names,omitempty"`    // transitive neighbours
 	ApplicableRules []RuleInput  `json:"applicable_rules,omitempty"` // rules whose pattern matches RootFile
-	ActiveClaims    []ClaimInput `json:"active_claims,omitempty"`  // work claims from other agents
-	TaskContext     string     `json:"task_context,omitempty"`
-	TaskID          string     `json:"task_id,omitempty"`
+	ActiveClaims    []ClaimInput `json:"active_claims,omitempty"`    // work claims from other agents
+	TaskContext     string       `json:"task_context,omitempty"`
+	TaskID          string       `json:"task_id,omitempty"`
 }
 
 // RuleInput is a single architectural rule reference.
