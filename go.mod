@@ -1,4 +1,4 @@
-module github.com/Divish1032/synapses-intelligence
+module github.com/SynapsesOS/synapses-intelligence
 
 go 1.26
 

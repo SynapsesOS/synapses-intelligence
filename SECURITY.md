@@ -4,7 +4,7 @@
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-Use [GitHub Security Advisories](https://github.com/Divish1032/synapses-intelligence/security/advisories/new)
+Use [GitHub Security Advisories](https://github.com/SynapsesOS/synapses-intelligence/security/advisories/new)
 to report vulnerabilities privately. You can expect a response within 72 hours.
 
 Please include:

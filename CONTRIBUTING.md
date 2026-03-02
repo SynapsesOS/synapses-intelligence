@@ -11,7 +11,7 @@ Thank you for your interest in contributing!
 ## Development setup
 
 ```bash
-git clone https://github.com/Divish1032/synapses-intelligence.git
+git clone https://github.com/SynapsesOS/synapses-intelligence.git
 cd synapses-intelligence
 go mod tidy
 go build ./...
@@ -66,5 +66,5 @@ server/                 HTTP server exposing /v1/* endpoints
 
 ## Reporting issues
 
-Open an issue at https://github.com/Divish1032/synapses-intelligence/issues.
+Open an issue at https://github.com/SynapsesOS/synapses-intelligence/issues.
 For security vulnerabilities, see [SECURITY.md](SECURITY.md).

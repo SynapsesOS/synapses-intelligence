@@ -22,10 +22,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Divish1032/synapses-intelligence/config"
-	"github.com/Divish1032/synapses-intelligence/internal/store"
-	"github.com/Divish1032/synapses-intelligence/pkg/brain"
-	"github.com/Divish1032/synapses-intelligence/server"
+	"github.com/SynapsesOS/synapses-intelligence/config"
+	"github.com/SynapsesOS/synapses-intelligence/internal/store"
+	"github.com/SynapsesOS/synapses-intelligence/pkg/brain"
+	"github.com/SynapsesOS/synapses-intelligence/server"
 )
 
 const version = "0.3.1"

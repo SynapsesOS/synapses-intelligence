@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Divish1032/synapses-intelligence/pkg/brain"
+	"github.com/SynapsesOS/synapses-intelligence/pkg/brain"
 )
 
 // Server is the HTTP server wrapping the Brain.

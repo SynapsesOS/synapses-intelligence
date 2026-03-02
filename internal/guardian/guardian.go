@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Divish1032/synapses-intelligence/internal/llm"
-	"github.com/Divish1032/synapses-intelligence/internal/store"
+	"github.com/SynapsesOS/synapses-intelligence/internal/llm"
+	"github.com/SynapsesOS/synapses-intelligence/internal/store"
 )
 
 const promptTemplate = `Explain this architectural rule violation to a developer. Be direct and actionable.

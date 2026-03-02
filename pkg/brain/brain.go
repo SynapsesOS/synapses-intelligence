@@ -5,15 +5,15 @@ import (
 	"io"
 	"time"
 
-	"github.com/Divish1032/synapses-intelligence/config"
-	"github.com/Divish1032/synapses-intelligence/internal/contextbuilder"
-	"github.com/Divish1032/synapses-intelligence/internal/enricher"
-	"github.com/Divish1032/synapses-intelligence/internal/guardian"
-	"github.com/Divish1032/synapses-intelligence/internal/ingestor"
-	"github.com/Divish1032/synapses-intelligence/internal/llm"
-	"github.com/Divish1032/synapses-intelligence/internal/orchestrator"
-	"github.com/Divish1032/synapses-intelligence/internal/sdlc"
-	"github.com/Divish1032/synapses-intelligence/internal/store"
+	"github.com/SynapsesOS/synapses-intelligence/config"
+	"github.com/SynapsesOS/synapses-intelligence/internal/contextbuilder"
+	"github.com/SynapsesOS/synapses-intelligence/internal/enricher"
+	"github.com/SynapsesOS/synapses-intelligence/internal/guardian"
+	"github.com/SynapsesOS/synapses-intelligence/internal/ingestor"
+	"github.com/SynapsesOS/synapses-intelligence/internal/llm"
+	"github.com/SynapsesOS/synapses-intelligence/internal/orchestrator"
+	"github.com/SynapsesOS/synapses-intelligence/internal/sdlc"
+	"github.com/SynapsesOS/synapses-intelligence/internal/store"
 )
 
 // Brain is the public interface for the Thinking Brain.

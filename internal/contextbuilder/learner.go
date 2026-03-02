@@ -9,7 +9,7 @@ package contextbuilder
 import (
 	"fmt"
 
-	"github.com/Divish1032/synapses-intelligence/internal/store"
+	"github.com/SynapsesOS/synapses-intelligence/internal/store"
 )
 
 // DecisionInput carries the data needed to update co-occurrence patterns.

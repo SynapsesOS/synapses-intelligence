@@ -6,7 +6,7 @@ package sdlc
 import (
 	"fmt"
 
-	"github.com/Divish1032/synapses-intelligence/internal/store"
+	"github.com/SynapsesOS/synapses-intelligence/internal/store"
 )
 
 // Manager reads and writes the project SDLC state in brain.sqlite.

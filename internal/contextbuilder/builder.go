@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Divish1032/synapses-intelligence/internal/enricher"
-	"github.com/Divish1032/synapses-intelligence/internal/sdlc"
-	"github.com/Divish1032/synapses-intelligence/internal/store"
+	"github.com/SynapsesOS/synapses-intelligence/internal/enricher"
+	"github.com/SynapsesOS/synapses-intelligence/internal/sdlc"
+	"github.com/SynapsesOS/synapses-intelligence/internal/store"
 )
 
 const (
