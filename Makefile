@@ -2,7 +2,7 @@
 
 BINARY := brain
 BUILD_DIR := ./bin
-GO := /usr/local/go/bin/go
+GO := go
 
 build:
 	$(GO) build -o $(BUILD_DIR)/$(BINARY) ./cmd/brain
