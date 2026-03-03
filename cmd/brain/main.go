@@ -28,7 +28,7 @@ import (
 	"github.com/SynapsesOS/synapses-intelligence/server"
 )
 
-const version = "0.4.0"
+const version = "0.5.1"
 
 func main() {
 	if len(os.Args) < 2 {
