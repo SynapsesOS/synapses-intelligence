@@ -7,9 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// thinkTagRe strips Qwen3.5 extended thinking output (<think>...</think> blocks).
+var thinkTagRe = regexp.MustCompile(`(?s)<think>.*?</think>`)
 
 // OllamaClient calls the Ollama REST API at POST /api/generate.
 // It keeps a reusable http.Client for connection pooling.
@@ -17,6 +21,11 @@ type OllamaClient struct {
 	baseURL    string
 	model      string
 	httpClient *http.Client
+	// think controls Qwen3.5 extended thinking mode.
+	// When true, "/think\n\n" is prepended to the prompt (deeper reasoning).
+	// When false, "/no_think\n\n" is prepended (faster, no chain-of-thought).
+	// Models that don't support thinking mode silently ignore the prefix.
+	think bool
 }
 
 // NewOllamaClient creates a client targeting the given Ollama base URL and model.
@@ -32,6 +41,14 @@ func NewOllamaClient(baseURL, model string, timeoutMS int) *OllamaClient {
 			Timeout: time.Duration(timeoutMS) * time.Millisecond,
 		},
 	}
+}
+
+// WithThinking configures extended thinking mode for Qwen3.5 models.
+// Call on construction: llm.NewOllamaClient(...).WithThinking(true)
+// Returns the client to allow chaining.
+func (c *OllamaClient) WithThinking(enabled bool) *OllamaClient {
+	c.think = enabled
+	return c
 }
 
 // ollamaRequest is the payload for POST /api/generate.
@@ -58,7 +75,16 @@ type ollamaResponse struct {
 
 // Generate sends a prompt and returns the response text.
 // Uses stream=false for simplicity and lowest latency on small outputs.
+// If thinking mode is configured, prepends /think or /no_think to the prompt
+// (Qwen3.5 extended reasoning control) and strips <think>...</think> from output.
 func (c *OllamaClient) Generate(ctx context.Context, prompt string) (string, error) {
+	// Apply Qwen3.5 thinking mode prefix. Models that don't support this ignore it.
+	if c.think {
+		prompt = "/think\n\n" + prompt
+	} else {
+		prompt = "/no_think\n\n" + prompt
+	}
+
 	reqBody := ollamaRequest{
 		Model:  c.model,
 		Prompt: prompt,
@@ -103,7 +129,10 @@ func (c *OllamaClient) Generate(ctx context.Context, prompt string) (string, err
 		return "", fmt.Errorf("ollama error: %s", result.Error)
 	}
 
-	return strings.TrimSpace(result.Response), nil
+	// Strip extended thinking blocks (<think>...</think>) that Qwen3.5 emits
+	// when thinking mode is enabled. The actual answer follows after the block.
+	response := thinkTagRe.ReplaceAllString(result.Response, "")
+	return strings.TrimSpace(response), nil
 }
 
 // Available checks if Ollama is reachable by calling GET /api/tags.

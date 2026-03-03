@@ -20,15 +20,14 @@ import (
 
 const (
 	// maxCodeChars is the maximum code snippet size sent to the LLM.
-	// Keeps prompts small for fast inference on 1-2B models.
+	// Keeps prompts small for fast inference on 0.8-2B models.
 	maxCodeChars = 500
 
-	// promptTemplate is tuned for small models:
-	//   - Imperative instruction first
-	//   - Strict JSON-only output format
-	//   - No markdown, no preamble
-	// tags: 1-3 short domain labels e.g. ["auth","http","database"]
-	promptTemplate = `Describe what this code entity does in ONE sentence. Add 1-3 short domain tags.
+	// promptTemplate generates a prose briefing suitable for LLM context delivery.
+	// 2-3 sentences covering: what it does, its role, and any important concerns.
+	// The summary replaces verbose raw code/doc in get_context responses, giving
+	// Claude natural-language context that costs far fewer tokens than JSON.
+	promptTemplate = `Write a 2-3 sentence technical briefing for this code entity: what it does, its role in the system, and any important patterns or concerns to be aware of.
 Output ONLY valid JSON with no other text: {"summary": "...", "tags": ["tag1"]}
 
 Name: %s (%s, package %s)

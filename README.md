@@ -15,13 +15,14 @@ same information in ~800 tokens that raw nodes would need 4,000+ tokens to expre
 
 ### Capabilities at a glance
 
-| Capability | Method | LLM? | Latency |
+| Capability | Method | LLM tier | Latency (CPU) |
 |---|---|---|---|
-| Summarise a code entity (1 sentence) | `Ingest` | yes | 1–3 s |
+| 2-3 sentence prose briefing for a code entity | `Ingest` | Tier 0 (0.8B) | ~3 s |
+| Strip boilerplate from web content | `Prune` | Tier 0 (0.8B) | ~3 s |
 | Context Packet (summaries + constraints + guidance) | `BuildContextPacket` | optional | <5 ms fast path |
-| Architectural insight for a neighbourhood | `Enrich` | yes | 1–3 s |
-| Explain a rule violation in plain English | `ExplainViolation` | yes (cached) | <1 ms cached |
-| Agent conflict work distribution | `Coordinate` | yes | 1–3 s |
+| Architectural insight for a neighbourhood | `Enrich` | Tier 2 (4B) | ~12 s |
+| Explain a rule violation in plain English | `ExplainViolation` | Tier 1 (2B, cached) | <1 ms cached |
+| Agent conflict work distribution | `Coordinate` | Tier 3 (9B) | ~25 s |
 | SDLC phase + quality mode management | `SetSDLCPhase` / `SetQualityMode` | no | <1 ms |
 | Co-occurrence learning ("also check Y when editing X") | `LogDecision` | no | <1 ms |
 | Get learned patterns | `GetPatterns` | no | <1 ms |
@@ -47,18 +48,23 @@ No CGO, no external databases, no network dependencies beyond Ollama.
 ## Quick start
 
 ```sh
-# 1. Install Ollama and pull the default model
-ollama pull qwen2.5-coder:1.5b
+# 1. Install Ollama and pull the Tier 0 model (minimum — handles ingest + prune)
+ollama pull qwen3.5:0.8b
 
-# 2. Build the binary
+# 2. Optionally pull additional tiers for better quality
+ollama pull qwen3.5:2b    # Tier 1: guardian (violation explanations)
+ollama pull qwen3.5:4b    # Tier 2: enricher (architectural insight)
+ollama pull qwen3.5:9b    # Tier 3: orchestrator (multi-agent conflicts)
+
+# 3. Build the binary
 make build
 
-# 3. Start the brain sidecar
+# 4. Start the brain sidecar
 ./bin/brain serve
 
-# 4. Verify it's running
+# 5. Verify it's running
 curl http://localhost:11435/v1/health
-# {"status":"ok","model":"qwen2.5-coder:1.5b","available":true}
+# {"status":"ok","model":"qwen3.5:4b","available":true}
 ```
 
 ---
@@ -95,8 +101,11 @@ All fields are optional — sensible defaults apply.
 {
   "enabled": true,
   "ollama_url": "http://localhost:11434",
-  "model": "qwen2.5-coder:1.5b",
-  "timeout_ms": 3000,
+  "model_ingest":      "qwen3.5:0.8b",
+  "model_guardian":    "qwen3.5:2b",
+  "model_enrich":      "qwen3.5:4b",
+  "model_orchestrate": "qwen3.5:9b",
+  "timeout_ms": 60000,
   "db_path": "~/.synapses/brain.sqlite",
   "port": 11435,
 
@@ -122,11 +131,16 @@ BRAIN_CONFIG=/path/to/brain.json brain serve
 |---|---|---|
 | `enabled` | `false` | Master switch. Set `true` to activate all features. |
 | `ollama_url` | `http://localhost:11434` | Ollama server base URL. |
-| `model` | `qwen2.5-coder:1.5b` | Ollama model tag. See [Model tiers](#model-tiers). |
-| `timeout_ms` | `3000` | Per-LLM-request timeout in milliseconds. |
+| `model_ingest` | `qwen3.5:0.8b` | Tier 0 (Reflex): bulk ingest + web pruning. |
+| `model_guardian` | `qwen3.5:2b` | Tier 1 (Sensory): rule violation explanations. |
+| `model_enrich` | `qwen3.5:4b` | Tier 2 (Specialist): architectural insight. |
+| `model_orchestrate` | `qwen3.5:9b` | Tier 3 (Architect): multi-agent conflict resolution. |
+| `model` | `qwen3.5:4b` | Fallback model when tier fields are absent (backward compat). |
+| `fast_model` | `qwen3.5:0.8b` | Fallback fast model when `model_ingest` is absent. |
+| `timeout_ms` | `60000` | Per-LLM-request timeout in milliseconds. WriteTimeout = 2× this. |
 | `db_path` | `~/.synapses/brain.sqlite` | SQLite database path (created if missing). |
 | `port` | `11435` | HTTP sidecar port. |
-| `ingest` | `true` | Enable `POST /v1/ingest` (semantic summaries). |
+| `ingest` | `true` | Enable `POST /v1/ingest` (prose briefings). |
 | `enrich` | `true` | Enable `POST /v1/enrich` (neighbourhood insight). |
 | `guardian` | `true` | Enable `POST /v1/explain-violation` (rule explanations). |
 | `orchestrate` | `true` | Enable `POST /v1/coordinate` (agent conflict resolution). |
@@ -139,22 +153,33 @@ BRAIN_CONFIG=/path/to/brain.json brain serve
 
 ## Model tiers
 
-| System RAM | Model | Size | Notes |
-|---|---|---|---|
-| 4 GB | `qwen2.5-coder:1.5b` | ~900 MB | Default. Works on any dev machine. |
-| 4 GB+ | `qwen3:1.7b` | ~1.1 GB | Recommended upgrade. Better reasoning. |
-| 8 GB+ | `qwen3:4b` | ~2.5 GB | Power user. Noticeably better summaries. |
-| 16 GB+ | `qwen3:8b` | ~5 GB | Enterprise. Best quality, higher latency. |
+synapses-intelligence uses a **4-tier nervous system** — each task type runs on the smallest
+model capable of doing it well. All four Qwen3.5 models share the same tokenizer and support
+`/think` (chain-of-thought) and `/no_think` (fast, deterministic) mode switching.
+
+| Tier | Name | Model | Thinking | RAM | CPU latency | Tasks |
+|---|---|---|---|---|---|---|
+| 0 | Reflex | `qwen3.5:0.8b` | off | 1 GB | ~3 s | Ingest (prose briefings), web pruning |
+| 1 | Sensory | `qwen3.5:2b` | off | 2 GB | ~5 s | Guardian (violation explanations) |
+| 2 | Specialist | `qwen3.5:4b` | on | 4 GB | ~12 s | Enricher (architectural insight) |
+| 3 | Architect | `qwen3.5:9b` | on | 8 GB | ~25 s | Orchestrator (multi-agent conflicts) |
+
+**Minimum setup** (ingest + prune only): pull `qwen3.5:0.8b`.
+**Recommended setup** (all features): pull all four models.
 
 ```sh
-# Pull a specific model
-ollama pull qwen3:1.7b
+ollama pull qwen3.5:0.8b   # required
+ollama pull qwen3.5:2b     # recommended: guardian
+ollama pull qwen3.5:4b     # recommended: enricher
+ollama pull qwen3.5:9b     # optional: orchestrator
+```
 
-# Start brain with a different model
-brain serve -model qwen3:1.7b
+If a tier model is missing, brain falls back to the `model` config field. To point all tiers
+at a single model (e.g. for minimal RAM setups):
 
-# Or set in config
-{ "model": "qwen3:1.7b" }
+```json
+{ "model_ingest": "qwen3.5:0.8b", "model_guardian": "qwen3.5:0.8b",
+  "model_enrich": "qwen3.5:0.8b", "model_orchestrate": "qwen3.5:0.8b" }
 ```
 
 ---
@@ -269,7 +294,7 @@ brain reset
 
 ```sh
 brain version
-# synapses-intelligence v0.3.0
+# synapses-intelligence v0.5.1
 ```
 
 ---
@@ -298,8 +323,8 @@ Health check and LLM availability probe.
 
 ### `POST /v1/ingest`
 
-Generate and store a 1-sentence semantic summary (+ topic tags) for a code entity.
-Call this whenever a function, struct, or method is saved.
+Generate and store a **2-3 sentence prose briefing** (+ topic tags) for a code entity.
+Call this whenever a function, struct, or method is saved. Uses Tier 0 (0.8B).
 
 **Request**
 ```json
@@ -325,6 +350,33 @@ Call this whenever a function, struct, or method is saved.
 - `node_id` and `code` are required. `node_type` and `package` are optional but improve summary quality.
 - Re-ingesting the same `node_id` overwrites the old summary and invalidates the insight cache.
 - Returns immediately (with no summary) if Ollama is unavailable.
+
+---
+
+### `POST /v1/prune`
+
+Strip boilerplate from raw web page text (navigation, ads, footers, cookie notices) and
+return only the core technical content. Used by synapses-scout as a preprocessing step
+before `POST /v1/ingest` to improve distillation quality. Uses Tier 0 (0.8B). Fail-silent:
+returns the original content if the LLM is unavailable.
+
+**Request**
+```json
+{
+  "content": "...3000 chars of raw web page text..."
+}
+```
+
+**Response**
+```json
+{
+  "pruned":          "...clean technical paragraphs (~1200 chars)...",
+  "original_length": 3000,
+  "pruned_length":   1187
+}
+```
+
+On LLM error, returns the original content with an `X-Prune-Warning` response header.
 
 ---
 
@@ -694,14 +746,17 @@ _ = b.LogDecision(ctx, brain.DecisionRequest{
 
 ```go
 type Brain interface {
-    // Semantic summaries
+    // Semantic summaries (Tier 0: 0.8B)
     Ingest(ctx, IngestRequest) (IngestResponse, error)
-    Enrich(ctx, EnrichRequest) (EnrichResponse, error)
     Summary(nodeID string) string
 
+    // Web content preprocessing (Tier 0: 0.8B)
+    Prune(ctx context.Context, content string) (string, error)
+
     // Architectural analysis
-    ExplainViolation(ctx, ViolationRequest) (ViolationResponse, error)
-    Coordinate(ctx, CoordinateRequest) (CoordinateResponse, error)
+    Enrich(ctx, EnrichRequest) (EnrichResponse, error)           // Tier 2: 4B
+    ExplainViolation(ctx, ViolationRequest) (ViolationResponse, error) // Tier 1: 2B
+    Coordinate(ctx, CoordinateRequest) (CoordinateResponse, error)     // Tier 3: 9B
 
     // Context Packet
     BuildContextPacket(ctx, ContextPacketRequest) (*ContextPacket, error)
@@ -718,6 +773,7 @@ type Brain interface {
     // Diagnostics
     Available() bool
     ModelName() string
+    EnsureModel(ctx context.Context, w io.Writer) error
 }
 ```
 

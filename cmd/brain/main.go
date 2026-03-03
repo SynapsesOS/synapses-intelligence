@@ -104,7 +104,7 @@ func cmdServe(cfg config.BrainConfig) {
 		}
 	}
 
-	srv := server.New(b, cfg.Port)
+	srv := server.New(b, cfg.Port, cfg.TimeoutMS)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
