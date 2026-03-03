@@ -63,3 +63,6 @@ func (n *NullBrain) GetSDLCConfig() SDLCConfig {
 
 // GetPatterns returns nil — no patterns are stored when brain is disabled.
 func (n *NullBrain) GetPatterns(_ string, _ int) []PatternHint { return nil }
+
+// Prune returns the original content unchanged — no LLM is available.
+func (n *NullBrain) Prune(_ context.Context, content string) (string, error) { return content, nil }

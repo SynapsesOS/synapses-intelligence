@@ -12,6 +12,7 @@ import (
 	"github.com/SynapsesOS/synapses-intelligence/internal/ingestor"
 	"github.com/SynapsesOS/synapses-intelligence/internal/llm"
 	"github.com/SynapsesOS/synapses-intelligence/internal/orchestrator"
+	"github.com/SynapsesOS/synapses-intelligence/internal/pruner"
 	"github.com/SynapsesOS/synapses-intelligence/internal/sdlc"
 	"github.com/SynapsesOS/synapses-intelligence/internal/store"
 )
@@ -78,6 +79,11 @@ type Brain interface {
 	// If trigger is non-empty, only patterns with that trigger are returned.
 	// limit caps the number of results (0 = default of 20).
 	GetPatterns(trigger string, limit int) []PatternHint
+
+	// Prune strips boilerplate (navigation, ads, footers) from raw web page text
+	// using the Tier 0 (0.8B) model. Returns cleaned technical content.
+	// Falls back to returning the original content if the LLM is unavailable.
+	Prune(ctx context.Context, content string) (string, error)
 }
 
 // impl is the production Brain backed by Ollama + SQLite.
@@ -89,6 +95,7 @@ type impl struct {
 	enricher     *enricher.Enricher
 	guardian     *guardian.Guardian
 	orchestrator *orchestrator.Orchestrator
+	pruner       *pruner.Pruner
 	sdlcMgr      *sdlc.Manager
 	builder      *contextbuilder.Builder
 	learner      *contextbuilder.Learner
@@ -102,16 +109,16 @@ func New(cfg config.BrainConfig) Brain {
 		return &NullBrain{}
 	}
 
-	// Primary model: used for enrichment and insights (7b default).
-	ollamaClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.Model, cfg.TimeoutMS)
-
-	// Fast model: used for bulk ingest/summarization (1.5b default).
-	// Falls back to primary model if FastModel is unset.
-	fastModel := cfg.FastModel
-	if fastModel == "" {
-		fastModel = cfg.Model
-	}
-	fastClient := llm.NewOllamaClient(cfg.OllamaURL, fastModel, cfg.TimeoutMS)
+	// Tiered Nervous System: each task type uses the model best suited to its complexity.
+	// Thinking mode (Qwen3.5 /think prefix) is disabled for fast tiers and enabled for deep tiers.
+	// Tier 0 (Reflex) — ingest: fast summarization, no reasoning. Default: qwen3.5:0.8b.
+	ingestClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelIngest, cfg.TimeoutMS).WithThinking(false)
+	// Tier 1 (Sensory) — guardian: plain-English violation explanations. Default: qwen3.5:2b.
+	guardianClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelGuardian, cfg.TimeoutMS).WithThinking(false)
+	// Tier 2 (Specialist) — enricher: architectural insight + concerns. Default: qwen3.5:4b.
+	enrichClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelEnrich, cfg.TimeoutMS).WithThinking(true)
+	// Tier 3 (Architect) — orchestrator: multi-agent conflict resolution. Default: qwen3.5:9b.
+	orchestrateClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelOrchestrate, cfg.TimeoutMS).WithThinking(true)
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
@@ -121,17 +128,18 @@ func New(cfg config.BrainConfig) Brain {
 
 	timeout := time.Duration(cfg.TimeoutMS) * time.Millisecond
 
-	enr := enricher.New(ollamaClient, st, timeout)
+	enr := enricher.New(enrichClient, st, timeout)
 	mgr := sdlc.NewManager(st)
 
 	b := &impl{
 		cfg:          cfg,
-		llm:          ollamaClient,
+		llm:          enrichClient, // primary client used for Available() / ModelName()
 		store:        st,
-		ingestor:     ingestor.New(fastClient, st, timeout),
+		ingestor:     ingestor.New(ingestClient, st, timeout),
 		enricher:     enr,
-		guardian:     guardian.New(ollamaClient, st, timeout),
-		orchestrator: orchestrator.New(ollamaClient, timeout),
+		guardian:     guardian.New(guardianClient, st, timeout),
+		orchestrator: orchestrator.New(orchestrateClient, timeout),
+		pruner:       pruner.New(ingestClient, timeout), // Tier 0: 0.8B, same as ingest
 		sdlcMgr:      mgr,
 		builder:      contextbuilder.New(st, mgr, enr),
 		learner:      contextbuilder.NewLearner(st),
@@ -227,6 +235,10 @@ func (b *impl) Coordinate(ctx context.Context, req CoordinateRequest) (Coordinat
 		Suggestion:       r.Suggestion,
 		AlternativeScope: r.AlternativeScope,
 	}, nil
+}
+
+func (b *impl) Prune(ctx context.Context, content string) (string, error) {
+	return b.pruner.Prune(ctx, content)
 }
 
 func (b *impl) Summary(nodeID string) string {

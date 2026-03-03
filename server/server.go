@@ -27,7 +27,9 @@ type Server struct {
 }
 
 // New creates a Server that delegates to the given Brain.
-func New(b brain.Brain, port int) *Server {
+// timeoutMS is the configured LLM timeout; WriteTimeout is set to 2× this value
+// so LLM handlers always have time to write their response after inference completes.
+func New(b brain.Brain, port int, timeoutMS int) *Server {
 	s := &Server{brain: b, port: port}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
@@ -36,6 +38,7 @@ func New(b brain.Brain, port int) *Server {
 	mux.HandleFunc("POST /v1/enrich", s.handleEnrich)
 	mux.HandleFunc("POST /v1/explain-violation", s.handleExplainViolation)
 	mux.HandleFunc("POST /v1/coordinate", s.handleCoordinate)
+	mux.HandleFunc("POST /v1/prune", s.handlePrune)
 
 	// v0.2.0 endpoints
 	mux.HandleFunc("POST /v1/context-packet", s.handleContextPacket)
@@ -45,11 +48,12 @@ func New(b brain.Brain, port int) *Server {
 	mux.HandleFunc("POST /v1/decision", s.handleLogDecision)
 	mux.HandleFunc("GET /v1/patterns", s.handleGetPatterns)
 
+	writeTimeout := time.Duration(timeoutMS*2) * time.Millisecond
 	s.server = &http.Server{
 		Addr:         fmt.Sprintf("127.0.0.1:%d", port),
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second, // LLM calls can take up to ~3s
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  60 * time.Second,
 	}
 	return s
@@ -174,6 +178,32 @@ func (s *Server) handleCoordinate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handlePrune(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if req.Content == "" {
+		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+
+	pruned, err := s.brain.Prune(r.Context(), req.Content)
+	if err != nil {
+		// Non-fatal: return original content with a warning header.
+		pruned = req.Content
+		w.Header().Set("X-Prune-Warning", err.Error())
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"pruned":          pruned,
+		"original_length": len(req.Content),
+		"pruned_length":   len(pruned),
+	})
 }
 
 // --- v0.2.0 Handlers ---

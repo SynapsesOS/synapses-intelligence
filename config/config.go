@@ -15,20 +15,39 @@ type BrainConfig struct {
 	// OllamaURL is the base URL of the Ollama server. Default: "http://localhost:11434".
 	OllamaURL string `json:"ollama_url,omitempty"`
 
-	// Model is the primary Ollama model tag for enrichment and insights.
-	// Default: "qwen2.5-coder:7b" (~4.5GB, needs 6GB VRAM or 8GB RAM).
-	// Downgrade options for low-resource systems:
-	//   "qwen2.5-coder:1.5b" — fast, fits in 4GB RAM (~900MB)
-	//   "qwen2.5-coder:3b"   — balanced, fits in 6GB RAM (~1.9GB)
+	// Model is the primary Ollama model tag (enrichment fallback when ModelEnrich is unset).
+	// Default: "qwen3.5:4b" — fast on CPU (~12s), beats qwen2.5-coder:7b at 1/3 the size.
+	// Legacy option: "qwen2.5-coder:7b" (~4.5GB, needs 6GB VRAM or 8GB RAM).
 	Model string `json:"model,omitempty"`
 
-	// FastModel is the Ollama model tag for bulk ingestion (summarization).
-	// Bulk ingest runs on every node at index time; use a smaller, faster model.
-	// Default: "qwen2.5-coder:1.5b" (~900MB).
-	// Set to "" to use Model for both ingest and enrichment.
+	// FastModel is the Ollama model tag for bulk ingestion (fallback when ModelIngest is unset).
+	// Default: "qwen3.5:0.8b" — runs in <3s on CPU, fits in 2GB RAM.
+	// Legacy option: "qwen2.5-coder:1.5b" (~900MB).
 	FastModel string `json:"fast_model,omitempty"`
 
-	// TimeoutMS is the per-request LLM timeout in milliseconds. Default: 3000.
+	// --- Tiered Nervous System: per-task model assignment ---
+	// Each tier defaults to the appropriate Qwen3.5 model.
+	// Set to "" to fall back to FastModel/Model. All 4 can point to the same model.
+
+	// ModelIngest is the model for bulk node summarization at index time.
+	// Tier 0 (Reflex): simple extraction, no reasoning needed. Default: "qwen3.5:0.8b".
+	ModelIngest string `json:"model_ingest,omitempty"`
+
+	// ModelGuardian is the model for rule violation explanations.
+	// Tier 1 (Sensory): structured plain-English output. Default: "qwen3.5:2b".
+	ModelGuardian string `json:"model_guardian,omitempty"`
+
+	// ModelEnrich is the model for architectural enrichment and insight generation.
+	// Tier 2 (Specialist): complex analysis across multiple callers/callees. Default: "qwen3.5:4b".
+	ModelEnrich string `json:"model_enrich,omitempty"`
+
+	// ModelOrchestrate is the model for multi-agent conflict resolution.
+	// Tier 3 (Architect): deep reasoning about competing scope claims. Default: "qwen3.5:9b".
+	ModelOrchestrate string `json:"model_orchestrate,omitempty"`
+
+	// TimeoutMS is the per-request LLM timeout in milliseconds.
+	// The HTTP server WriteTimeout is set to 2× this value. Default: 60000 (60s).
+	// Must exceed the slowest LLM inference time on your hardware (~25s for 9b CPU).
 	TimeoutMS int `json:"timeout_ms,omitempty"`
 
 	// DBPath is the path to the brain's own SQLite database.
@@ -63,21 +82,25 @@ type BrainConfig struct {
 func DefaultConfig() BrainConfig {
 	home, _ := os.UserHomeDir()
 	return BrainConfig{
-		Enabled:         false,
-		OllamaURL:       "http://localhost:11434",
-		Model:           "qwen2.5-coder:7b",
-		FastModel:       "qwen2.5-coder:1.5b",
-		TimeoutMS:       30000,
-		DBPath:          filepath.Join(home, ".synapses", "brain.sqlite"),
-		Port:            11435,
-		Ingest:          true,
-		Enrich:          true,
-		Guardian:        true,
-		Orchestrate:     true,
-		ContextBuilder:  true,
-		LearningEnabled: true,
-		DefaultPhase:    "development",
-		DefaultMode:     "standard",
+		Enabled:          false,
+		OllamaURL:        "http://localhost:11434",
+		Model:            "qwen3.5:4b",
+		FastModel:        "qwen3.5:0.8b",
+		ModelIngest:      "qwen3.5:0.8b",
+		ModelGuardian:    "qwen3.5:2b",
+		ModelEnrich:      "qwen3.5:4b",
+		ModelOrchestrate: "qwen3.5:9b",
+		TimeoutMS:        60000,
+		DBPath:           filepath.Join(home, ".synapses", "brain.sqlite"),
+		Port:             11435,
+		Ingest:           true,
+		Enrich:           true,
+		Guardian:         true,
+		Orchestrate:      true,
+		ContextBuilder:   true,
+		LearningEnabled:  true,
+		DefaultPhase:     "development",
+		DefaultMode:      "standard",
 	}
 }
 
@@ -120,18 +143,32 @@ func LoadFile(path string) (BrainConfig, error) {
 }
 
 // applyDefaults fills in zero values with defaults.
+// Tier models fall back to the legacy fast_model/model fields if unset.
 func (c *BrainConfig) applyDefaults() {
 	if c.OllamaURL == "" {
 		c.OllamaURL = "http://localhost:11434"
 	}
 	if c.Model == "" {
-		c.Model = "qwen2.5-coder:7b"
+		c.Model = "qwen3.5:4b"
 	}
 	if c.FastModel == "" {
-		c.FastModel = "qwen2.5-coder:1.5b"
+		c.FastModel = "qwen3.5:0.8b"
+	}
+	// Tier fallback chain: tier model → legacy field → hardcoded default
+	if c.ModelIngest == "" {
+		c.ModelIngest = c.FastModel
+	}
+	if c.ModelGuardian == "" {
+		c.ModelGuardian = "qwen3.5:2b"
+	}
+	if c.ModelEnrich == "" {
+		c.ModelEnrich = c.Model
+	}
+	if c.ModelOrchestrate == "" {
+		c.ModelOrchestrate = c.Model
 	}
 	if c.TimeoutMS <= 0 {
-		c.TimeoutMS = 30000
+		c.TimeoutMS = 60000
 	}
 	if c.Port <= 0 {
 		c.Port = 11435
