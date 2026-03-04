@@ -48,6 +48,11 @@ func New(b brain.Brain, port int, timeoutMS int) *Server {
 	mux.HandleFunc("POST /v1/decision", s.handleLogDecision)
 	mux.HandleFunc("GET /v1/patterns", s.handleGetPatterns)
 
+	// v0.6.0 endpoints
+	mux.HandleFunc("POST /v1/adr", s.handleUpsertADR)
+	mux.HandleFunc("GET /v1/adr", s.handleListADRs)
+	mux.HandleFunc("GET /v1/adr/{id}", s.handleGetADR)
+
 	writeTimeout := time.Duration(timeoutMS*2) * time.Millisecond
 	s.server = &http.Server{
 		Addr:         fmt.Sprintf("127.0.0.1:%d", port),
@@ -325,6 +330,65 @@ func (s *Server) handleGetPatterns(w http.ResponseWriter, r *http.Request) {
 		"patterns": patterns,
 		"count":    len(patterns),
 	})
+}
+
+// --- ADR handlers ---
+
+func (s *Server) handleUpsertADR(w http.ResponseWriter, r *http.Request) {
+	var req brain.ADRRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	if err := s.brain.UpsertADR(req); err != nil {
+		writeError(w, http.StatusInternalServerError, "upsert adr: "+err.Error())
+		return
+	}
+	adr, err := s.brain.GetADR(req.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "get adr after upsert: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, adr)
+}
+
+func (s *Server) handleListADRs(w http.ResponseWriter, r *http.Request) {
+	fileFilter := r.URL.Query().Get("file")
+	if fileFilter != "" {
+		adrs, err := s.brain.GetADRsForFile(fileFilter, 0)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "get adrs for file: "+err.Error())
+			return
+		}
+		if adrs == nil {
+			adrs = []brain.ADR{}
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"adrs": adrs, "count": len(adrs), "file_filter": fileFilter})
+		return
+	}
+	adrs, err := s.brain.AllADRs()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list adrs: "+err.Error())
+		return
+	}
+	if adrs == nil {
+		adrs = []brain.ADR{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"adrs": adrs, "count": len(adrs)})
+}
+
+func (s *Server) handleGetADR(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	adr, err := s.brain.GetADR(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "adr not found: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, adr)
 }
 
 // --- Helpers ---

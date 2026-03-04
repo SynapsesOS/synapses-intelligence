@@ -81,6 +81,21 @@ CREATE TABLE IF NOT EXISTS decision_log (
 );
 CREATE INDEX IF NOT EXISTS idx_dlog_entity  ON decision_log(entity_name);
 CREATE INDEX IF NOT EXISTS idx_dlog_created ON decision_log(created_at);
+
+-- Architectural Decision Records: persistent cold memory for key design choices.
+-- linked_files is a JSON array of file path glob patterns (e.g. ["internal/store/", "*.go"]).
+CREATE TABLE IF NOT EXISTS adrs (
+	id           TEXT PRIMARY KEY,
+	title        TEXT NOT NULL,
+	status       TEXT NOT NULL DEFAULT 'proposed',
+	context_text TEXT NOT NULL DEFAULT '',
+	decision     TEXT NOT NULL,
+	consequences TEXT NOT NULL DEFAULT '',
+	linked_files TEXT NOT NULL DEFAULT '[]',
+	created_at   TEXT NOT NULL,
+	updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_adrs_status ON adrs(status);
 `
 
 // Store is the brain's persistent SQLite store.
@@ -563,6 +578,123 @@ func (s *Store) Reset() error {
 		DELETE FROM sdlc_config;
 		DELETE FROM context_patterns;
 		DELETE FROM decision_log;
+		DELETE FROM adrs;
 	`)
 	return err
+}
+
+// --- Architectural Decision Records (ADRs) ---
+
+// ADR represents an Architectural Decision Record stored in brain.sqlite.
+type ADR struct {
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Status       string   `json:"status"` // proposed | accepted | deprecated | superseded
+	ContextText  string   `json:"context,omitempty"`
+	Decision     string   `json:"decision"`
+	Consequences string   `json:"consequences,omitempty"`
+	LinkedFiles  []string `json:"linked_files,omitempty"` // file path glob patterns
+	CreatedAt    string   `json:"created_at"`
+	UpdatedAt    string   `json:"updated_at"`
+}
+
+// UpsertADR creates or updates an ADR. ID must be non-empty.
+func (s *Store) UpsertADR(adr ADR) error {
+	linkedJSON, _ := json.Marshal(adr.LinkedFiles)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if adr.CreatedAt == "" {
+		adr.CreatedAt = now
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO adrs (id, title, status, context_text, decision, consequences, linked_files, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			title        = excluded.title,
+			status       = excluded.status,
+			context_text = excluded.context_text,
+			decision     = excluded.decision,
+			consequences = excluded.consequences,
+			linked_files = excluded.linked_files,
+			updated_at   = excluded.updated_at`,
+		adr.ID, adr.Title, adr.Status, adr.ContextText, adr.Decision, adr.Consequences,
+		string(linkedJSON), adr.CreatedAt, now,
+	)
+	return err
+}
+
+// GetADR returns the ADR with the given ID, or an error if not found.
+func (s *Store) GetADR(id string) (ADR, error) {
+	row := s.db.QueryRow(`
+		SELECT id, title, status, context_text, decision, consequences, linked_files, created_at, updated_at
+		FROM adrs WHERE id = ?`, id)
+	return scanADR(row)
+}
+
+// AllADRs returns all ADRs ordered by updated_at descending.
+func (s *Store) AllADRs() ([]ADR, error) {
+	rows, err := s.db.Query(`
+		SELECT id, title, status, context_text, decision, consequences, linked_files, created_at, updated_at
+		FROM adrs ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanADRRows(rows)
+}
+
+// GetADRsForFile returns accepted ADRs whose linked_files patterns match the given file path.
+// At most `limit` ADRs are returned; pass 0 for no limit.
+func (s *Store) GetADRsForFile(filePath string, limit int) ([]ADR, error) {
+	rows, err := s.db.Query(`
+		SELECT id, title, status, context_text, decision, consequences, linked_files, created_at, updated_at
+		FROM adrs WHERE status = 'accepted' ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	all, err := scanADRRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	var matched []ADR
+	for _, adr := range all {
+		for _, pattern := range adr.LinkedFiles {
+			if strings.Contains(filePath, pattern) {
+				matched = append(matched, adr)
+				break
+			}
+		}
+		if limit > 0 && len(matched) >= limit {
+			break
+		}
+	}
+	return matched, nil
+}
+
+// scanADR reads a single ADR from a sql.Row.
+func scanADR(row *sql.Row) (ADR, error) {
+	var a ADR
+	var linkedRaw string
+	if err := row.Scan(&a.ID, &a.Title, &a.Status, &a.ContextText, &a.Decision,
+		&a.Consequences, &linkedRaw, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		return ADR{}, err
+	}
+	_ = json.Unmarshal([]byte(linkedRaw), &a.LinkedFiles)
+	return a, nil
+}
+
+// scanADRRows reads multiple ADRs from sql.Rows.
+func scanADRRows(rows *sql.Rows) ([]ADR, error) {
+	var out []ADR
+	for rows.Next() {
+		var a ADR
+		var linkedRaw string
+		if err := rows.Scan(&a.ID, &a.Title, &a.Status, &a.ContextText, &a.Decision,
+			&a.Consequences, &linkedRaw, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return out, err
+		}
+		_ = json.Unmarshal([]byte(linkedRaw), &a.LinkedFiles)
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
