@@ -3,6 +3,7 @@ package brain
 import (
 	"context"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/SynapsesOS/synapses-intelligence/config"
@@ -16,6 +17,15 @@ import (
 	"github.com/SynapsesOS/synapses-intelligence/internal/sdlc"
 	"github.com/SynapsesOS/synapses-intelligence/internal/store"
 )
+
+// supportsThinking returns true for models that support Qwen3.x thinking mode
+// (/think and /no_think prompt prefixes). Qwen2.5 and other non-Qwen3 models
+// do not understand these prefixes and produce garbage output when they are sent.
+func supportsThinking(model string) bool {
+	lower := strings.ToLower(model)
+	// Match "qwen3" prefix: covers qwen3:1b, qwen3.5:4b, qwen3:8b, etc.
+	return strings.HasPrefix(lower, "qwen3")
+}
 
 // Brain is the public interface for the Thinking Brain.
 // All methods are safe for concurrent use.
@@ -130,9 +140,10 @@ func New(cfg config.BrainConfig) Brain {
 	// Tier 1 (Sensory) — guardian: plain-English violation explanations. Default: qwen3.5:2b.
 	guardianClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelGuardian, cfg.TimeoutMS).WithThinking(false)
 	// Tier 2 (Specialist) — enricher: architectural insight + concerns. Default: qwen3.5:4b.
-	enrichClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelEnrich, cfg.TimeoutMS).WithThinking(true)
+	// Thinking mode is auto-detected: Qwen3.x supports /think; Qwen2.5 and others do not.
+	enrichClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelEnrich, cfg.TimeoutMS).WithThinking(supportsThinking(cfg.ModelEnrich))
 	// Tier 3 (Architect) — orchestrator: multi-agent conflict resolution. Default: qwen3.5:9b.
-	orchestrateClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelOrchestrate, cfg.TimeoutMS).WithThinking(true)
+	orchestrateClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelOrchestrate, cfg.TimeoutMS).WithThinking(supportsThinking(cfg.ModelOrchestrate))
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {

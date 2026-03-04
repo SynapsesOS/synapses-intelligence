@@ -75,14 +75,18 @@ type ollamaResponse struct {
 
 // Generate sends a prompt and returns the response text.
 // Uses stream=false for simplicity and lowest latency on small outputs.
-// If thinking mode is configured, prepends /think or /no_think to the prompt
-// (Qwen3.5 extended reasoning control) and strips <think>...</think> from output.
+// For Qwen3.x models, prepends /think or /no_think to control extended reasoning.
+// Non-Qwen3 models (qwen2.5-coder, llama, mistral, etc.) receive no prefix —
+// they do not understand these tokens and produce garbled output if they are sent.
 func (c *OllamaClient) Generate(ctx context.Context, prompt string) (string, error) {
-	// Apply Qwen3.5 thinking mode prefix. Models that don't support this ignore it.
-	if c.think {
-		prompt = "/think\n\n" + prompt
-	} else {
-		prompt = "/no_think\n\n" + prompt
+	// Thinking mode prefix is ONLY for Qwen3.x models.
+	// qwen2.5-coder and other models must receive a clean prompt (no prefix).
+	if strings.HasPrefix(strings.ToLower(c.model), "qwen3") {
+		if c.think {
+			prompt = "/think\n\n" + prompt
+		} else {
+			prompt = "/no_think\n\n" + prompt
+		}
 	}
 
 	reqBody := ollamaRequest{

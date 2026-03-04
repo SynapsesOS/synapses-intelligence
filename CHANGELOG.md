@@ -5,6 +5,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.6.1] — 2026-03-04
+
+### Fixed
+
+- **BUG-I01: Thinking mode prefix sent to non-Qwen3 models**: `OllamaClient.Generate()` was prepending `/think\n\n` or `/no_think\n\n` to ALL models regardless of model family. `qwen2.5-coder` and other non-Qwen3 models do not understand these prefixes, causing them to produce garbled or empty output. Fixed in `ollama.go`: thinking prefixes are now only applied when `strings.HasPrefix(model, "qwen3")`. Non-Qwen3 models receive a clean prompt with no prefix. (`internal/llm/ollama.go`)
+
+- **BUG-I01 (brain.go): `WithThinking(true)` hardcoded for enrich/orchestrate**: `brain.go New()` was calling `.WithThinking(true)` unconditionally for Tier 2 and Tier 3 clients. Added `supportsThinking(model string) bool` helper that checks the model prefix and passes the result to `WithThinking()`. (`pkg/brain/brain.go`)
+
+- **BUG-I02: Tilde (`~/`) not expanded in `db_path`**: When `brain.json` contained `"db_path": "~/.synapses/brain.sqlite"`, the path was used literally, causing `brain.sqlite` to be written to a `~/` directory relative to the current working directory. Fixed in `applyDefaults()` by expanding `~/` to `os.UserHomeDir()`. (`config/config.go`)
+
+### Added
+
+- **GPU accelerator detection in `brain setup`**: `cmdSetup` now calls `detectAccelerator()` — a pure Go (no CGo) function that checks `runtime.GOOS == "darwin"` (Metal), `exec.LookPath("nvidia-smi")` (CUDA), and `exec.LookPath("rocm-smi")` (ROCm). GPU machines use the Qwen3.5 family; CPU-only machines use `qwen2.5-coder` (proven fast: 10-20s vs 60s+ for Qwen3.5 on CPU). (`cmd/brain/main.go`)
+
+- **Tiered model assignment in `brain setup`**: `tierModelsForAccelerator(accel)` returns hardware-appropriate models for all 4 tiers. `brain setup` now writes `model_ingest`, `model_guardian`, `model_enrich`, and `model_orchestrate` as separate keys instead of assigning the same model to all tiers. (`cmd/brain/main.go`)
+
+---
+
+## [0.6.0] — 2026-03-03
+
+### Added
+
+- **Architectural Decision Records (ADRs)**: New `adrs` table in brain.sqlite. New HTTP endpoints: `POST /v1/adr` (create/update), `GET /v1/adr` (list all), `GET /v1/adr/{id}` (get one). ADRs store the "why" behind architectural decisions as permanent cold memory. Surfaced via synapses `get_adrs` MCP tool and in `get_context(format="compact")` for matching files. (`server/server.go`, `internal/store/store.go`)
+
+- **Domain-aware enricher**: The enricher now detects the domain of each entity from its file path (`internal/parser/` → parser domain, `internal/mcp/` → MCP domain, etc.) and applies specialized prompt prefixes. Parser domain prompts emphasize language-specific quirks; MCP domain prompts emphasize fail-silent semantics and latency constraints. (`internal/enricher/enricher.go`)
+
+- **Doc fallback for `packet_quality`**: When brain.sqlite has no summary for a node, the graph's own AST doc comment is used as `root_summary`. This gives `packet_quality ≥ 0.4` immediately on a fresh install without any LLM call. (`internal/contextbuilder/builder.go`)
+
+- **`RootFile` wired to enricher**: The `root_file` field from the context packet request is now passed to the enricher, enabling domain detection and per-file architectural insights. (`internal/contextbuilder/builder.go`, `internal/enricher/enricher.go`)
+
+- **`brain benchmark` command**: Standalone latency benchmark for all installed Ollama models. Prints a table with model name, latency, and pass/fail against the configured timeout. (`cmd/brain/main.go`)
+
+- **Graph warnings in context packets**: `GraphWarnings` in context packets now include deterministic topology-based warnings (blast radius, missing tests) computed from graph structure without any LLM call.
+
+---
+
+## [0.5.1] — 2026-03-03
+
+### Fixed
+
+- **WriteTimeout hardcoded at 30s**: HTTP server `WriteTimeout` was hardcoded to 30 seconds, causing all three LLM endpoints (`/v1/ingest`, `/v1/enrich`, `/v1/explain-violation`) to always return 503 on CPU-only machines where inference takes 15-60s. Changed to `2 × TimeoutMS`. (`server/server.go`)
+
+- **Context packet doc fallback**: `BuildContextPacket` now falls back to the root node's graph doc comment when brain.sqlite has no summary, giving `packet_quality ≥ 0.4` on cold-brain deployments.
+
+---
+
 ## [0.3.1] — 2026-03-02
 
 ### Fixed

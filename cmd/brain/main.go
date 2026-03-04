@@ -29,7 +29,7 @@ import (
 	"github.com/SynapsesOS/synapses-intelligence/server"
 )
 
-const version = "0.6.0"
+const version = "0.6.1"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -563,6 +563,52 @@ func ollamaInstalled() bool {
 	return err == nil
 }
 
+// AcceleratorType identifies the GPU backend available on this machine.
+type AcceleratorType string
+
+const (
+	AccelCPU   AcceleratorType = "cpu"
+	AccelCUDA  AcceleratorType = "cuda"  // NVIDIA GPU
+	AccelMetal AcceleratorType = "metal" // Apple Silicon (M-series) unified GPU memory
+	AccelROCm  AcceleratorType = "rocm"  // AMD GPU
+)
+
+// detectAccelerator returns the best GPU accelerator type available.
+// Uses pure Go — no CGo. Detection is best-effort and fail-silent.
+//
+//   - macOS → Metal (Apple Silicon always has unified GPU memory)
+//   - Linux/Windows + nvidia-smi in PATH → CUDA
+//   - Linux/Windows + rocm-smi in PATH → ROCm
+//   - Otherwise → CPU-only
+func detectAccelerator() AcceleratorType {
+	if runtime.GOOS == "darwin" {
+		return AccelMetal
+	}
+	if _, err := exec.LookPath("nvidia-smi"); err == nil {
+		return AccelCUDA
+	}
+	if _, err := exec.LookPath("rocm-smi"); err == nil {
+		return AccelROCm
+	}
+	return AccelCPU
+}
+
+// tierModelsForAccelerator returns recommended tiered model names based on the
+// detected accelerator. On GPU machines the full Qwen3.5 family is used
+// (thinking mode works). On CPU-only machines qwen2.5-coder is used instead
+// (proven fast: 10-20s on CPU; Qwen3.5 times out at >60s on CPU-only).
+func tierModelsForAccelerator(accel AcceleratorType) (ingest, guardian, enrich, orchestrate string) {
+	switch accel {
+	case AccelMetal, AccelCUDA, AccelROCm:
+		// GPU: Qwen3.5 family with thinking mode (auto-detected in brain.go).
+		return "qwen3.5:0.8b", "qwen3.5:2b", "qwen3.5:4b", "qwen3.5:9b"
+	default:
+		// CPU-only: qwen2.5-coder proven fast (10-20s). Qwen3.5 times out on CPU.
+		// Tier 0+1 use 1.5b (fast ingest+guardian). Tier 2+3 use 7b (richer analysis).
+		return "qwen2.5-coder:1.5b", "qwen2.5-coder:1.5b", "qwen2.5-coder:7b", "qwen2.5-coder:7b"
+	}
+}
+
 // probeMaxDuration is the per-model timeout used during setup and benchmark.
 // Models that can't respond within this time are considered too slow for use.
 const probeMaxDuration = 90 * time.Second
@@ -603,7 +649,17 @@ func cmdSetup(cfg config.BrainConfig, cfgPath string) {
 
 	ctx := context.Background()
 
-	// Step 3: Discover installed models and probe actual latency.
+	// Step 3: Detect GPU accelerator (no CGo — pure PATH/OS detection).
+	accel := detectAccelerator()
+	accelLabel := map[AcceleratorType]string{
+		AccelMetal: "Apple Silicon / Metal (unified GPU memory)",
+		AccelCUDA:  "NVIDIA CUDA",
+		AccelROCm:  "AMD ROCm",
+		AccelCPU:   "CPU-only (no GPU detected)",
+	}[accel]
+	fmt.Printf("  Accelerator: %s\n", accelLabel)
+
+	// Step 4: Discover installed models and probe actual latency.
 	// This is more reliable than RAM-based heuristics — actual measurement
 	// catches CPU architecture differences that theory cannot predict.
 	installed, err := llm.ListInstalledModels(ctx, cfg.OllamaURL)
@@ -627,20 +683,31 @@ func cmdSetup(cfg config.BrainConfig, cfgPath string) {
 		}
 	}
 
-	// Step 4: Fall back to RAM-based recommendation if probe found nothing usable.
+	// Step 5: Fall back to RAM-based recommendation if probe found nothing usable.
 	if chosenModel == "" {
 		chosenModel, _ = recommendedModel(ramGB)
 		fmt.Printf("  Falling back to RAM-based recommendation: %s\n", chosenModel)
 		fmt.Println("  (Run  brain benchmark  after pulling models to confirm actual speed)")
 	}
 
-	// Step 5: Apply chosen model to all 4 tiers and compute timeout.
+	// Step 6: Assign tiered models based on accelerator type.
+	// GPU machines use the full Qwen3.5 family (fast enough for thinking mode).
+	// CPU-only machines use qwen2.5-coder (proven <20s per call; Qwen3.5 times out on CPU).
 	cfg.Enabled = true
-	cfg.Model = chosenModel
-	cfg.ModelIngest = chosenModel
-	cfg.ModelGuardian = chosenModel
-	cfg.ModelEnrich = chosenModel
-	cfg.ModelOrchestrate = chosenModel
+	ingestM, guardianM, enrichM, orchestrateM := tierModelsForAccelerator(accel)
+	cfg.ModelIngest = ingestM
+	cfg.ModelGuardian = guardianM
+	cfg.ModelEnrich = enrichM
+	cfg.ModelOrchestrate = orchestrateM
+	cfg.Model = enrichM // primary model = Tier 2 (enrich)
+
+	if accel == AccelCPU {
+		fmt.Printf("  → CPU-only: tiers set to %s (fast) / %s (deep)\n", ingestM, enrichM)
+		fmt.Println("    Tip: thinking mode is auto-disabled for non-Qwen3 models.")
+	} else {
+		fmt.Printf("  → GPU (%s): tiers set to Qwen3.5 family (0.8b/2b/4b/9b)\n", accel)
+		fmt.Println("    Tip: thinking mode is auto-enabled for Qwen3.5 models.")
+	}
 
 	// Set timeout to 3× measured latency (or 60s default when latency unknown).
 	if chosenLatency > 0 {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // BrainConfig holds all configuration for the thinking brain.
@@ -182,5 +183,11 @@ func (c *BrainConfig) applyDefaults() {
 	}
 	if c.DefaultMode == "" {
 		c.DefaultMode = "standard"
+	}
+	// Expand leading ~/ in DBPath so users can write "~/.synapses/brain.sqlite"
+	// in brain.json without the path being treated as a literal tilde directory.
+	if strings.HasPrefix(c.DBPath, "~/") {
+		home, _ := os.UserHomeDir()
+		c.DBPath = filepath.Join(home, c.DBPath[2:])
 	}
 }
