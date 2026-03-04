@@ -19,6 +19,21 @@ import (
 	"github.com/SynapsesOS/synapses-intelligence/internal/store"
 )
 
+// domainFocusMap maps file path substrings to domain-specific focus lines.
+// When a root file path contains one of these substrings, the corresponding focus
+// line is appended to the enricher prompt so the LLM applies domain expertise.
+var domainFocusMap = []struct {
+	pattern string
+	focus   string
+}{
+	{"internal/parser/", "Focus on: AST correctness, language quirks, tree-sitter query patterns, edge cases in public/private detection."},
+	{"internal/mcp/", "Focus on: tool contract (fail-silent), handler latency, context.WithTimeout usage, JSON serialization correctness."},
+	{"internal/graph/", "Focus on: BFS correctness, edge type semantics, complexity invariants, memory efficiency."},
+	{"internal/store/", "Focus on: SQL correctness, migration safety, FTS5 index, CGo-free driver constraints."},
+	{"internal/brain/", "Focus on: HTTP timeout handling, fail-silent pattern, client retry, interface contract."},
+	{"internal/scout/", "Focus on: HTTP timeout handling, fail-silent pattern, client retry, interface contract."},
+}
+
 const (
 	// maxNamesInPrompt limits how many callee/caller names are sent to the LLM.
 	// 10 is appropriate for 7b models; reduce to 5 for 1-2b models.
@@ -42,6 +57,7 @@ type Request struct {
 	RootID       string
 	RootName     string
 	RootType     string
+	RootFile     string // file path of the root entity; used for domain detection
 	CalleeNames  []string
 	CallerNames  []string
 	RelatedNames []string
@@ -114,11 +130,27 @@ func (e *Enricher) buildPrompt(req Request) string {
 		taskSection = "\nTask context: " + req.TaskContext
 	}
 
+	domainSection := ""
+	if focus := detectDomain(req.RootFile); focus != "" {
+		domainSection = "\n" + focus
+	}
+
 	return fmt.Sprintf(promptTemplate,
 		req.RootName, nodeType,
 		callees, callers,
-		taskSection,
+		taskSection+domainSection,
 	)
+}
+
+// detectDomain returns a domain-specific focus line for the given file path,
+// or "" if no domain pattern matches.
+func detectDomain(filePath string) string {
+	for _, d := range domainFocusMap {
+		if strings.Contains(filePath, d.pattern) {
+			return d.focus
+		}
+	}
+	return ""
 }
 
 func parseInsight(raw string) (Response, error) {

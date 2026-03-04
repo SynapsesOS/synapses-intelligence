@@ -255,8 +255,9 @@ type SynapsesSnapshotInput struct {
 	ActiveClaims    []ClaimInput `json:"active_claims,omitempty"`    // work claims from other agents
 	TaskContext     string       `json:"task_context,omitempty"`
 	TaskID          string       `json:"task_id,omitempty"`
-	HasTests        bool         `json:"has_tests"` // whether *_test.go exists for root file
-	FanIn           int          `json:"fan_in"`    // total caller count (may exceed len(CallerNames))
+	HasTests        bool         `json:"has_tests"`           // whether *_test.go exists for root file
+	FanIn           int          `json:"fan_in"`              // total caller count (may exceed len(CallerNames)
+	RootDoc         string       `json:"root_doc,omitempty"`  // AST doc comment; fallback summary when brain.sqlite has no summary)
 }
 
 // RuleInput is a single architectural rule reference.
@@ -296,4 +297,32 @@ type SDLCConfig struct {
 	QualityMode QualityMode `json:"quality_mode"`
 	UpdatedAt   string      `json:"updated_at"`
 	UpdatedBy   string      `json:"updated_by,omitempty"`
+}
+
+// --- Architectural Decision Records (ADRs) ---
+
+// ADR is an Architectural Decision Record — a persistent cold-memory entry
+// for a significant design choice. ADRs are injected into get_context output
+// when their linked_files patterns match the queried entity's file.
+type ADR struct {
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Status       string   `json:"status"` // proposed | accepted | deprecated | superseded
+	ContextText  string   `json:"context,omitempty"`
+	Decision     string   `json:"decision"`
+	Consequences string   `json:"consequences,omitempty"`
+	LinkedFiles  []string `json:"linked_files,omitempty"` // file path glob patterns
+	CreatedAt    string   `json:"created_at"`
+	UpdatedAt    string   `json:"updated_at"`
+}
+
+// ADRRequest is the input to UpsertADR.
+type ADRRequest struct {
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Status       string   `json:"status"` // proposed | accepted | deprecated | superseded
+	ContextText  string   `json:"context,omitempty"`
+	Decision     string   `json:"decision"`
+	Consequences string   `json:"consequences,omitempty"`
+	LinkedFiles  []string `json:"linked_files,omitempty"`
 }

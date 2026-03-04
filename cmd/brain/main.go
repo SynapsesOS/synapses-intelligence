@@ -23,12 +23,13 @@ import (
 	"time"
 
 	"github.com/SynapsesOS/synapses-intelligence/config"
+	"github.com/SynapsesOS/synapses-intelligence/internal/llm"
 	"github.com/SynapsesOS/synapses-intelligence/internal/store"
 	"github.com/SynapsesOS/synapses-intelligence/pkg/brain"
 	"github.com/SynapsesOS/synapses-intelligence/server"
 )
 
-const version = "0.5.1"
+const version = "0.6.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -65,6 +66,8 @@ func main() {
 		cmdPatterns(cfg)
 	case "reset":
 		cmdReset(cfg)
+	case "benchmark":
+		cmdBenchmark(cfg)
 	case "version", "--version", "-v":
 		fmt.Printf("synapses-intelligence v%s\n", version)
 	case "help", "--help", "-h":
@@ -560,8 +563,12 @@ func ollamaInstalled() bool {
 	return err == nil
 }
 
-// cmdSetup runs an interactive-free setup wizard: detects RAM, picks a model,
-// checks/explains Ollama, pulls the model, and writes brain.json.
+// probeMaxDuration is the per-model timeout used during setup and benchmark.
+// Models that can't respond within this time are considered too slow for use.
+const probeMaxDuration = 90 * time.Second
+
+// cmdSetup runs an interactive-free setup wizard: detects RAM, probes installed
+// Ollama models for actual inference latency, picks the fastest, and writes brain.json.
 func cmdSetup(cfg config.BrainConfig, cfgPath string) {
 	fmt.Println("synapses-intelligence setup")
 	fmt.Println("────────────────────────────")
@@ -572,24 +579,10 @@ func cmdSetup(cfg config.BrainConfig, cfgPath string) {
 		fmt.Printf("  System RAM:  %d GB\n", ramGB)
 	} else {
 		fmt.Println("  System RAM:  unknown")
-		ramGB = 4 // safe default
+		ramGB = 4
 	}
 
-	// Step 2: Model recommendation.
-	model, size := recommendedModel(ramGB)
-	fmt.Printf("  Recommended: %s  (%s)\n", model, size)
-	fmt.Println()
-	fmt.Println("  All tiers:")
-	for _, t := range modelTiers {
-		marker := "  "
-		if t.model == model {
-			marker = "→ "
-		}
-		fmt.Printf("    %s%-26s %s   %s\n", marker, t.model, t.size, t.note)
-	}
-	fmt.Println()
-
-	// Step 3: Ollama check.
+	// Step 2: Ollama check.
 	if !ollamaInstalled() {
 		fmt.Println("  ✗ Ollama not found on PATH.")
 		fmt.Println()
@@ -597,7 +590,6 @@ func cmdSetup(cfg config.BrainConfig, cfgPath string) {
 		switch runtime.GOOS {
 		case "darwin":
 			fmt.Println("    brew install ollama")
-			fmt.Println("    # or download from https://ollama.com/download")
 		case "linux":
 			fmt.Println("    curl -fsSL https://ollama.com/install.sh | sh")
 		default:
@@ -609,35 +601,78 @@ func cmdSetup(cfg config.BrainConfig, cfgPath string) {
 	}
 	fmt.Println("  ✓ Ollama installed")
 
-	// Step 4: Update config with recommended model if user hasn't already customised.
-	if cfg.Model == config.DefaultConfig().Model {
-		cfg.Model = model
-	}
-	cfg.Enabled = true
+	ctx := context.Background()
 
-	// Step 5: Save config.
+	// Step 3: Discover installed models and probe actual latency.
+	// This is more reliable than RAM-based heuristics — actual measurement
+	// catches CPU architecture differences that theory cannot predict.
+	installed, err := llm.ListInstalledModels(ctx, cfg.OllamaURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  ✗ Cannot reach Ollama at %s: %v\n", cfg.OllamaURL, err)
+		fmt.Fprintf(os.Stderr, "    Start it with:  ollama serve\n")
+		os.Exit(1)
+	}
+
+	var chosenModel string
+	var chosenLatency time.Duration
+
+	if len(installed) > 0 {
+		fmt.Printf("\n  Probing %d installed model(s) (max %s each)...\n",
+			len(installed), probeMaxDuration)
+		chosenModel, chosenLatency = pickFastestModel(ctx, cfg.OllamaURL, installed, probeMaxDuration)
+		if chosenModel != "" {
+			fmt.Printf("\n  ✓ Fastest model: %s  (%s)\n", chosenModel, chosenLatency.Round(time.Millisecond))
+		} else {
+			fmt.Println("\n  ⚠ No installed model responded within", probeMaxDuration)
+		}
+	}
+
+	// Step 4: Fall back to RAM-based recommendation if probe found nothing usable.
+	if chosenModel == "" {
+		chosenModel, _ = recommendedModel(ramGB)
+		fmt.Printf("  Falling back to RAM-based recommendation: %s\n", chosenModel)
+		fmt.Println("  (Run  brain benchmark  after pulling models to confirm actual speed)")
+	}
+
+	// Step 5: Apply chosen model to all 4 tiers and compute timeout.
+	cfg.Enabled = true
+	cfg.Model = chosenModel
+	cfg.ModelIngest = chosenModel
+	cfg.ModelGuardian = chosenModel
+	cfg.ModelEnrich = chosenModel
+	cfg.ModelOrchestrate = chosenModel
+
+	// Set timeout to 3× measured latency (or 60s default when latency unknown).
+	if chosenLatency > 0 {
+		cfg.TimeoutMS = int(chosenLatency.Milliseconds() * 3)
+		if cfg.TimeoutMS < 30000 {
+			cfg.TimeoutMS = 30000 // minimum 30s
+		}
+	} else {
+		cfg.TimeoutMS = 60000
+	}
+	fmt.Printf("  timeout_ms set to %dms (3× measured latency)\n", cfg.TimeoutMS)
+
+	// Step 6: Save config.
 	if err := config.SaveFile(cfgPath, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "setup: could not write config: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("  ✓ Config saved to %s\n", cfgPath)
 
-	// Step 6: Pull model.
-	fmt.Printf("  Pulling %s...\n", cfg.Model)
+	// Step 7: Pull the model if not already installed.
 	b := brain.New(cfg)
 	if !b.Available() {
-		fmt.Fprintf(os.Stderr, "\n  ✗ Ollama is installed but not running.\n")
+		fmt.Fprintf(os.Stderr, "\n  ✗ Ollama is not running.\n")
 		fmt.Fprintf(os.Stderr, "    Start it with:  ollama serve\n")
-		fmt.Fprintf(os.Stderr, "    Then run:       brain setup\n")
 		os.Exit(1)
 	}
-	if err := b.EnsureModel(context.Background(), os.Stderr); err != nil {
+	if err := b.EnsureModel(ctx, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "\n  ✗ Pull failed: %v\n", err)
 		fmt.Fprintf(os.Stderr, "    Try manually:  ollama pull %s\n", cfg.Model)
 		os.Exit(1)
 	}
 
-	// Step 7: Done.
 	fmt.Println()
 	fmt.Println("  ✓ Model ready")
 	fmt.Println()
@@ -653,8 +688,109 @@ func cmdSetup(cfg config.BrainConfig, cfgPath string) {
 	fmt.Println("  3. (Re)start synapses:")
 	fmt.Println("       synapses start --path .")
 	fmt.Println()
-	fmt.Printf("  To change model later:  brain config model <tag> --pull\n")
-	fmt.Printf("  Available tags: qwen2.5-coder:1.5b  qwen3:1.7b  qwen3:4b  qwen3:8b\n")
+	fmt.Println("  Run  brain benchmark  at any time to re-measure model latency.")
+	fmt.Println("  Run  brain config model <tag> --pull  to switch models later.")
+}
+
+// pickFastestModel probes each model in order and returns the name and latency
+// of the fastest one that responds within maxDuration. Returns ("", 0) if none do.
+func pickFastestModel(ctx context.Context, ollamaURL string, models []string, maxDuration time.Duration) (string, time.Duration) {
+	type result struct {
+		model   string
+		latency time.Duration
+	}
+
+	var best result
+	for _, model := range models {
+		client := llm.NewOllamaClient(ollamaURL, model, int(maxDuration.Milliseconds()))
+		fmt.Printf("    %-35s ", model)
+		lat, err := client.ProbeLatency(ctx, maxDuration)
+		if err != nil {
+			fmt.Printf("❌  (%v)\n", shortErr(err))
+			continue
+		}
+		fmt.Printf("✅  %s\n", lat.Round(time.Millisecond))
+		if best.model == "" || lat < best.latency {
+			best = result{model, lat}
+		}
+	}
+	return best.model, best.latency
+}
+
+// cmdBenchmark probes all installed Ollama models and prints a latency table.
+// Use this to decide which model to assign to each brain tier.
+func cmdBenchmark(cfg config.BrainConfig) {
+	ctx := context.Background()
+
+	fmt.Println("brain benchmark — measuring actual inference latency")
+	fmt.Println("────────────────────────────────────────────────────")
+	fmt.Printf("  Ollama: %s\n", cfg.OllamaURL)
+	fmt.Printf("  Max probe time per model: %s\n\n", probeMaxDuration)
+
+	installed, err := llm.ListInstalledModels(ctx, cfg.OllamaURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "benchmark: cannot reach Ollama: %v\n", err)
+		os.Exit(1)
+	}
+	if len(installed) == 0 {
+		fmt.Println("  No models installed. Run  ollama pull <model>  first.")
+		os.Exit(0)
+	}
+
+	type row struct {
+		model   string
+		latency time.Duration
+		ok      bool
+	}
+	rows := make([]row, 0, len(installed))
+
+	fmt.Printf("  %-35s  %s\n", "MODEL", "LATENCY")
+	fmt.Printf("  %s\n", repeat("-", 55))
+	for _, model := range installed {
+		client := llm.NewOllamaClient(cfg.OllamaURL, model, int(probeMaxDuration.Milliseconds()))
+		fmt.Printf("  %-35s  ", model)
+		lat, err := client.ProbeLatency(ctx, probeMaxDuration)
+		if err != nil {
+			fmt.Printf("timeout / error  (%v)\n", shortErr(err))
+			rows = append(rows, row{model, 0, false})
+		} else {
+			fmt.Printf("%s\n", lat.Round(time.Millisecond))
+			rows = append(rows, row{model, lat, true})
+		}
+	}
+
+	// Find fastest.
+	var fastest row
+	for _, r := range rows {
+		if r.ok && (fastest.model == "" || r.latency < fastest.latency) {
+			fastest = r
+		}
+	}
+
+	fmt.Println()
+	if fastest.model != "" {
+		recommendedMS := int(fastest.latency.Milliseconds() * 3)
+		if recommendedMS < 30000 {
+			recommendedMS = 30000
+		}
+		fmt.Printf("  Fastest: %s (%s)\n", fastest.model, fastest.latency.Round(time.Millisecond))
+		fmt.Printf("  Recommended timeout_ms: %d (3× latency)\n", recommendedMS)
+		fmt.Println()
+		fmt.Printf("  To apply:  brain config model %s\n", fastest.model)
+		fmt.Printf("             brain setup   (re-runs probe and writes brain.json)\n")
+	} else {
+		fmt.Println("  No model responded within the probe timeout.")
+		fmt.Println("  Consider pulling a smaller model:  ollama pull qwen2.5-coder:1.5b")
+	}
+}
+
+// shortErr truncates long error messages for display.
+func shortErr(err error) string {
+	s := err.Error()
+	if len(s) > 50 {
+		return s[:47] + "..."
+	}
+	return s
 }
 
 func truncate(s string, n int) string {

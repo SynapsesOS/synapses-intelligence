@@ -66,3 +66,15 @@ func (n *NullBrain) GetPatterns(_ string, _ int) []PatternHint { return nil }
 
 // Prune returns the original content unchanged — no LLM is available.
 func (n *NullBrain) Prune(_ context.Context, content string) (string, error) { return content, nil }
+
+// UpsertADR is a no-op implementation.
+func (n *NullBrain) UpsertADR(_ ADRRequest) error { return nil }
+
+// GetADR returns an error — no brain is configured.
+func (n *NullBrain) GetADR(_ string) (ADR, error) { return ADR{}, nil }
+
+// AllADRs returns nil — no brain is configured.
+func (n *NullBrain) AllADRs() ([]ADR, error) { return nil, nil }
+
+// GetADRsForFile returns nil — no brain is configured.
+func (n *NullBrain) GetADRsForFile(_ string, _ int) ([]ADR, error) { return nil, nil }

@@ -119,8 +119,9 @@ type Request struct {
 	TaskID          string
 
 	// Graph topology signals (populated by synapses core):
-	HasTests bool // whether *_test.go exists for root file
-	FanIn    int  // total caller count (may exceed len(CallerNames) when capped)
+	HasTests bool   // whether *_test.go exists for root file
+	FanIn    int    // total caller count (may exceed len(CallerNames) when capped)
+	RootDoc  string // AST doc comment; used as fallback when brain.sqlite has no summary
 }
 
 // Builder assembles a Context Packet from a Synapses snapshot and brain data.
@@ -154,8 +155,12 @@ func (b *Builder) Build(ctx context.Context, req Request) (*Packet, error) {
 	}
 
 	// Section 1: Root summary (fast path — SQLite).
+	// Falls back to the AST doc comment so packet_quality ≥ 0.4 on cold brain.
 	if sections.RootSummary && req.RootNodeID != "" {
 		pkt.RootSummary = b.store.GetSummary(req.RootNodeID)
+		if pkt.RootSummary == "" && req.RootDoc != "" {
+			pkt.RootSummary = req.RootDoc
+		}
 	}
 
 	// Section 1b: Dependency summaries (fast path — SQLite).
@@ -178,6 +183,7 @@ func (b *Builder) Build(ctx context.Context, req Request) (*Packet, error) {
 				RootID:       req.RootNodeID,
 				RootName:     req.RootName,
 				RootType:     req.RootType,
+				RootFile:     req.RootFile,
 				CalleeNames:  req.CalleeNames,
 				CallerNames:  req.CallerNames,
 				RelatedNames: req.RelatedNames,

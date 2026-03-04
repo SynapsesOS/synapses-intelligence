@@ -191,6 +191,85 @@ func (c *OllamaClient) ModelPulled(ctx context.Context) bool {
 	return false
 }
 
+// ProbeLatency measures actual inference latency by generating a short fixed
+// response. Uses a raw prompt (no thinking prefix) to measure baseline speed.
+// Returns the wall-clock duration, or an error if the model doesn't respond
+// within maxDuration. Callers should use this to pick the fastest installed model.
+func (c *OllamaClient) ProbeLatency(ctx context.Context, maxDuration time.Duration) (time.Duration, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, maxDuration)
+	defer cancel()
+
+	reqBody := ollamaRequest{
+		Model:  c.model,
+		Prompt: "Reply with one word: ready",
+		Stream: false,
+		Options: ollamaOptions{
+			Temperature: 0.0,
+			NumPredict:  8, // minimal output — just enough to confirm the model runs
+		},
+	}
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost,
+		c.baseURL+"/api/generate", bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	probeCli := &http.Client{Timeout: maxDuration + time.Second}
+	start := time.Now()
+	resp, err := probeCli.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("probe: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("probe returned HTTP %d", resp.StatusCode)
+	}
+	var result ollamaResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("probe decode: %w", err)
+	}
+	if result.Error != "" {
+		return 0, fmt.Errorf("probe error: %s", result.Error)
+	}
+	return time.Since(start), nil
+}
+
+// ListInstalledModels returns all model names present in Ollama's local library.
+func ListInstalledModels(ctx context.Context, baseURL string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimRight(baseURL, "/")+"/api/tags", nil)
+	if err != nil {
+		return nil, err
+	}
+	cli := &http.Client{Timeout: 5 * time.Second}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list models: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("list models: HTTP %d", resp.StatusCode)
+	}
+	var result struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("list models decode: %w", err)
+	}
+	names := make([]string, 0, len(result.Models))
+	for _, m := range result.Models {
+		names = append(names, m.Name)
+	}
+	return names, nil
+}
+
 // PullModel pulls the configured model from the Ollama registry, streaming
 // progress lines to w. Pass os.Stderr for terminal feedback.
 // Blocks until the pull completes or ctx is cancelled.

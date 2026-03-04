@@ -84,6 +84,20 @@ type Brain interface {
 	// using the Tier 0 (0.8B) model. Returns cleaned technical content.
 	// Falls back to returning the original content if the LLM is unavailable.
 	Prune(ctx context.Context, content string) (string, error)
+
+	// --- v0.6.0: ADRs ---
+
+	// UpsertADR creates or updates an Architectural Decision Record.
+	UpsertADR(req ADRRequest) error
+
+	// GetADR returns the ADR with the given ID.
+	GetADR(id string) (ADR, error)
+
+	// AllADRs returns all ADRs ordered by updated_at descending.
+	AllADRs() ([]ADR, error)
+
+	// GetADRsForFile returns accepted ADRs whose linked_files patterns match the given file path.
+	GetADRsForFile(filePath string, limit int) ([]ADR, error)
 }
 
 // impl is the production Brain backed by Ollama + SQLite.
@@ -287,6 +301,7 @@ func (b *impl) BuildContextPacket(ctx context.Context, req ContextPacketRequest)
 		TaskID:          req.Snapshot.TaskID,
 		HasTests:        req.Snapshot.HasTests,
 		FanIn:           req.Snapshot.FanIn,
+		RootDoc:         req.Snapshot.RootDoc,
 	})
 	if err != nil || pkt == nil {
 		return nil, err
@@ -402,4 +417,64 @@ func toContextPacket(p *contextbuilder.Packet) *ContextPacket {
 		})
 	}
 	return pkt
+}
+
+// --- ADR methods ---
+
+func (b *impl) UpsertADR(req ADRRequest) error {
+	return b.store.UpsertADR(store.ADR{
+		ID:           req.ID,
+		Title:        req.Title,
+		Status:       req.Status,
+		ContextText:  req.ContextText,
+		Decision:     req.Decision,
+		Consequences: req.Consequences,
+		LinkedFiles:  req.LinkedFiles,
+	})
+}
+
+func (b *impl) GetADR(id string) (ADR, error) {
+	a, err := b.store.GetADR(id)
+	if err != nil {
+		return ADR{}, err
+	}
+	return storeADRtoBrain(a), nil
+}
+
+func (b *impl) AllADRs() ([]ADR, error) {
+	adrs, err := b.store.AllADRs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ADR, len(adrs))
+	for i, a := range adrs {
+		out[i] = storeADRtoBrain(a)
+	}
+	return out, nil
+}
+
+func (b *impl) GetADRsForFile(filePath string, limit int) ([]ADR, error) {
+	adrs, err := b.store.GetADRsForFile(filePath, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ADR, len(adrs))
+	for i, a := range adrs {
+		out[i] = storeADRtoBrain(a)
+	}
+	return out, nil
+}
+
+func storeADRtoBrain(a store.ADR) ADR {
+	return ADR{
+		ID:           a.ID,
+		Title:        a.Title,
+		Status:       a.Status,
+		ContextText:  a.ContextText,
+		Decision:     a.Decision,
+		Consequences: a.Consequences,
+		LinkedFiles:  a.LinkedFiles,
+		CreatedAt:    a.CreatedAt,
+		UpdatedAt:    a.UpdatedAt,
+	}
 }
