@@ -255,9 +255,9 @@ type SynapsesSnapshotInput struct {
 	ActiveClaims    []ClaimInput `json:"active_claims,omitempty"`    // work claims from other agents
 	TaskContext     string       `json:"task_context,omitempty"`
 	TaskID          string       `json:"task_id,omitempty"`
-	HasTests        bool         `json:"has_tests"`           // whether *_test.go exists for root file
-	FanIn           int          `json:"fan_in"`              // total caller count (may exceed len(CallerNames)
-	RootDoc         string       `json:"root_doc,omitempty"`  // AST doc comment; fallback summary when brain.sqlite has no summary)
+	HasTests        bool         `json:"has_tests"`          // whether *_test.go exists for root file
+	FanIn           int          `json:"fan_in"`             // total caller count (may exceed len(CallerNames)
+	RootDoc         string       `json:"root_doc,omitempty"` // AST doc comment; fallback summary when brain.sqlite has no summary)
 }
 
 // RuleInput is a single architectural rule reference.
