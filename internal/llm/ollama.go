@@ -12,7 +12,9 @@ import (
 	"time"
 )
 
-// thinkTagRe strips Qwen3.5 extended thinking output (<think>...</think> blocks).
+// thinkTagRe strips legacy Qwen3.5 thinking output (<think>...</think> blocks).
+// Kept as a safety net for Ollama <0.6 which embedded thinking in the response field.
+// Ollama ≥0.6 separates thinking into a distinct "thinking" JSON field.
 var thinkTagRe = regexp.MustCompile(`(?s)<think>.*?</think>`)
 
 // OllamaClient calls the Ollama REST API at POST /api/generate.
@@ -21,10 +23,9 @@ type OllamaClient struct {
 	baseURL    string
 	model      string
 	httpClient *http.Client
-	// think controls Qwen3.5 extended thinking mode.
-	// When true, "/think\n\n" is prepended to the prompt (deeper reasoning).
-	// When false, "/no_think\n\n" is prepended (faster, no chain-of-thought).
-	// Models that don't support thinking mode silently ignore the prefix.
+	// think controls Qwen3.5 extended thinking mode via the Ollama API's
+	// think: bool field (Ollama ≥0.6). When false, chain-of-thought is suppressed
+	// and the model responds faster. Only effective for Qwen3.x models.
 	think bool
 }
 
@@ -56,6 +57,11 @@ type ollamaRequest struct {
 	Model  string `json:"model"`
 	Prompt string `json:"prompt"`
 	Stream bool   `json:"stream"`
+	// Think controls extended thinking mode via the Ollama ≥0.6 API field.
+	// When false, chain-of-thought is suppressed (faster). When true, the model
+	// reasons before answering. Only Qwen3.x models honour this field.
+	// omitempty: nil = not sent (non-Qwen3 models, or when not needed).
+	Think *bool `json:"think,omitempty"`
 	// Options tuned for small models: low temperature for deterministic JSON output.
 	Options ollamaOptions `json:"options"`
 }
@@ -75,20 +81,9 @@ type ollamaResponse struct {
 
 // Generate sends a prompt and returns the response text.
 // Uses stream=false for simplicity and lowest latency on small outputs.
-// For Qwen3.x models, prepends /think or /no_think to control extended reasoning.
-// Non-Qwen3 models (qwen2.5-coder, llama, mistral, etc.) receive no prefix —
-// they do not understand these tokens and produce garbled output if they are sent.
+// For Qwen3.x models, sets the Ollama API think: bool field (≥0.6) to control
+// chain-of-thought. Non-Qwen3 models receive no think field — they ignore it.
 func (c *OllamaClient) Generate(ctx context.Context, prompt string) (string, error) {
-	// Thinking mode prefix is ONLY for Qwen3.x models.
-	// qwen2.5-coder and other models must receive a clean prompt (no prefix).
-	if strings.HasPrefix(strings.ToLower(c.model), "qwen3") {
-		if c.think {
-			prompt = "/think\n\n" + prompt
-		} else {
-			prompt = "/no_think\n\n" + prompt
-		}
-	}
-
 	reqBody := ollamaRequest{
 		Model:  c.model,
 		Prompt: prompt,
@@ -100,6 +95,15 @@ func (c *OllamaClient) Generate(ctx context.Context, prompt string) (string, err
 			// fire immediately (e.g. "```" fires on the opening fence), producing
 			// empty responses. ExtractJSON handles all formatting variants.
 		},
+	}
+
+	// Set think: bool for Qwen3.x models via the Ollama ≥0.6 API field.
+	// The old /think and /no_think prompt prefixes are intentionally removed:
+	// Ollama 0.17.6+ ignores them for qwen3.5 models and returns an empty
+	// response field when the prefix is present.
+	if strings.HasPrefix(strings.ToLower(c.model), "qwen3") {
+		think := c.think
+		reqBody.Think = &think
 	}
 
 	data, err := json.Marshal(reqBody)
