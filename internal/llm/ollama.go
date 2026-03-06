@@ -7,15 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 )
-
-// thinkTagRe strips legacy Qwen3.5 thinking output (<think>...</think> blocks).
-// Kept as a safety net for Ollama <0.6 which embedded thinking in the response field.
-// Ollama ≥0.6 separates thinking into a distinct "thinking" JSON field.
-var thinkTagRe = regexp.MustCompile(`(?s)<think>.*?</think>`)
 
 // OllamaClient calls the Ollama REST API at POST /api/generate.
 // It keeps a reusable http.Client for connection pooling.

@@ -66,9 +66,10 @@ type Request struct {
 
 // Response is added to the get_context output.
 type Response struct {
-	Insight  string
-	Concerns []string
-	LLMUsed  bool // true when the LLM was called; false on cache hit (future)
+	RootSummary string   // populated by the SIL model (ROOT_SUMMARY: label)
+	Insight     string
+	Concerns    []string
+	LLMUsed     bool // true when the LLM was called; false on cache hit (future)
 }
 
 type insightJSON struct {
@@ -154,16 +155,29 @@ func detectDomain(filePath string) string {
 }
 
 func parseInsight(raw string) (Response, error) {
+	// First try the SIL labeled format (ROOT_SUMMARY: / INSIGHT: / CONCERNS:).
+	// ParseSILResponse also strips <think> blocks.
+	rootSummary, insight, concerns := llm.ParseSILResponse(raw)
+	if insight != "" || rootSummary != "" {
+		return Response{
+			RootSummary: rootSummary,
+			Insight:     insight,
+			Concerns:    concerns,
+			LLMUsed:     true,
+		}, nil
+	}
+
+	// Fall back to JSON format {"insight": "...", "concerns": [...]}
+	// for backward compatibility with standard Ollama models.
 	extracted := llm.ExtractJSON(raw)
 	var result insightJSON
 	if jsonErr := json.Unmarshal([]byte(extracted), &result); jsonErr == nil {
-		insight := strings.TrimSpace(result.Insight)
-		if insight != "" {
-			return Response{Insight: insight, Concerns: result.Concerns, LLMUsed: true}, nil
+		if txt := strings.TrimSpace(result.Insight); txt != "" {
+			return Response{Insight: txt, Concerns: result.Concerns, LLMUsed: true}, nil
 		}
 	}
-	// JSON parse failed or insight field was empty — use raw text as the insight.
-	// This handles small models that ignore JSON format instructions.
+
+	// Last resort: treat the whole response as raw insight text.
 	fallback := strings.TrimSpace(raw)
 	fallback = strings.TrimPrefix(fallback, "```")
 	fallback = strings.TrimSuffix(fallback, "```")

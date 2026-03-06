@@ -190,6 +190,10 @@ func (b *Builder) Build(ctx context.Context, req Request) (*Packet, error) {
 				TaskContext:  req.TaskContext,
 			})
 			if err == nil {
+				// SIL model may provide a root summary more specific than SQLite.
+				if r.RootSummary != "" {
+					pkt.RootSummary = r.RootSummary
+				}
 				pkt.Insight = r.Insight
 				pkt.Concerns = r.Concerns
 				pkt.LLMUsed = r.LLMUsed

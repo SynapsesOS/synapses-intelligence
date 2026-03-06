@@ -46,6 +46,16 @@ type BrainConfig struct {
 	// Tier 3 (Architect): deep reasoning about competing scope claims. Default: "qwen3.5:9b".
 	ModelOrchestrate string `json:"model_orchestrate,omitempty"`
 
+	// Backend selects the LLM backend.
+	// "ollama" (default): calls the Ollama HTTP sidecar.
+	// "local": loads a GGUF file directly via go-llama.cpp (no Ollama required).
+	// Build with -tags llamacpp and CGO_ENABLED=1 for the local backend.
+	Backend string `json:"backend,omitempty"`
+
+	// GGUFPath is the path to the fine-tuned GGUF model file.
+	// Only used when Backend == "local". Example: "~/.synapses/sil-9b.gguf"
+	GGUFPath string `json:"gguf_path,omitempty"`
+
 	// TimeoutMS is the per-request LLM timeout in milliseconds.
 	// The HTTP server WriteTimeout is set to 2× this value. Default: 60000 (60s).
 	// Must exceed the slowest LLM inference time on your hardware (~25s for 9b CPU).
@@ -184,10 +194,13 @@ func (c *BrainConfig) applyDefaults() {
 	if c.DefaultMode == "" {
 		c.DefaultMode = "standard"
 	}
-	// Expand leading ~/ in DBPath so users can write "~/.synapses/brain.sqlite"
-	// in brain.json without the path being treated as a literal tilde directory.
+	// Expand leading ~/ in DBPath and GGUFPath.
 	if strings.HasPrefix(c.DBPath, "~/") {
 		home, _ := os.UserHomeDir()
 		c.DBPath = filepath.Join(home, c.DBPath[2:])
+	}
+	if strings.HasPrefix(c.GGUFPath, "~/") {
+		home, _ := os.UserHomeDir()
+		c.GGUFPath = filepath.Join(home, c.GGUFPath[2:])
 	}
 }

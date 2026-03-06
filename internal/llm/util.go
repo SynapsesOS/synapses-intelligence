@@ -1,6 +1,18 @@
 package llm
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
+
+// thinkTagRe strips <think>...</think> blocks from LLM output.
+// Used by both OllamaClient and LocalClient as a safety net.
+var thinkTagRe = regexp.MustCompile(`(?s)<think>.*?</think>`)
+
+// stripThinkBlocks removes all <think>...</think> sections from s.
+func stripThinkBlocks(s string) string {
+	return strings.TrimSpace(thinkTagRe.ReplaceAllString(s, ""))
+}
 
 // ExtractJSON strips markdown code fences and extracts the JSON object from raw LLM output.
 // Many small models wrap JSON responses in ```json ... ``` blocks despite instructions.

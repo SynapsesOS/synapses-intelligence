@@ -133,17 +133,44 @@ func New(cfg config.BrainConfig) Brain {
 		return &NullBrain{}
 	}
 
-	// Tiered Nervous System: each task type uses the model best suited to its complexity.
-	// Thinking mode (Qwen3.5 /think prefix) is disabled for fast tiers and enabled for deep tiers.
-	// Tier 0 (Reflex) — ingest: fast summarization, no reasoning. Default: qwen3.5:0.8b.
-	ingestClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelIngest, cfg.TimeoutMS).WithThinking(false)
-	// Tier 1 (Sensory) — guardian: plain-English violation explanations. Default: qwen3.5:2b.
-	guardianClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelGuardian, cfg.TimeoutMS).WithThinking(false)
-	// Tier 2 (Specialist) — enricher: architectural insight + concerns. Default: qwen3.5:4b.
-	// Thinking mode is auto-detected: Qwen3.x supports /think; Qwen2.5 and others do not.
-	enrichClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelEnrich, cfg.TimeoutMS).WithThinking(supportsThinking(cfg.ModelEnrich))
-	// Tier 3 (Architect) — orchestrator: multi-agent conflict resolution. Default: qwen3.5:9b.
-	orchestrateClient := llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelOrchestrate, cfg.TimeoutMS).WithThinking(supportsThinking(cfg.ModelOrchestrate))
+	// Build LLM clients.
+	// When backend="local" and gguf_path is set, all four tiers share one LocalClient
+	// that runs the fine-tuned SIL GGUF model directly in-process (no Ollama required).
+	// Falls back to OllamaClient if the local model can't be loaded.
+	var (
+		ingestClient      llm.LLMClient
+		guardianClient    llm.LLMClient
+		enrichClient      llm.LLMClient
+		orchestrateClient llm.LLMClient
+	)
+
+	if cfg.Backend == "local" && cfg.GGUFPath != "" {
+		hw := llm.DetectHardware()
+		localCli, err := llm.NewLocalClient(cfg.GGUFPath, hw)
+		if err == nil {
+			// Single fine-tuned model serves all four tiers.
+			// Thinking enabled — SIL model was trained with <think> blocks.
+			localCli.WithThinking(true)
+			ingestClient = localCli
+			guardianClient = localCli
+			enrichClient = localCli
+			orchestrateClient = localCli
+		}
+		// err is non-fatal — fall through to Ollama below.
+	}
+
+	// Ollama path: used when backend!="local" or local client failed to load.
+	if ingestClient == nil {
+		// Tiered Nervous System: each task uses the model best suited to its complexity.
+		// Tier 0 (Reflex) — ingest: fast summarization, no reasoning. Default: qwen3.5:0.8b.
+		ingestClient = llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelIngest, cfg.TimeoutMS).WithThinking(false)
+		// Tier 1 (Sensory) — guardian: plain-English violation explanations. Default: qwen3.5:2b.
+		guardianClient = llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelGuardian, cfg.TimeoutMS).WithThinking(false)
+		// Tier 2 (Specialist) — enricher: architectural insight + concerns. Default: qwen3.5:4b.
+		enrichClient = llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelEnrich, cfg.TimeoutMS).WithThinking(supportsThinking(cfg.ModelEnrich))
+		// Tier 3 (Architect) — orchestrator: multi-agent conflict resolution. Default: qwen3.5:9b.
+		orchestrateClient = llm.NewOllamaClient(cfg.OllamaURL, cfg.ModelOrchestrate, cfg.TimeoutMS).WithThinking(supportsThinking(cfg.ModelOrchestrate))
+	}
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
