@@ -48,13 +48,27 @@ type BrainConfig struct {
 
 	// Backend selects the LLM backend.
 	// "ollama" (default): calls the Ollama HTTP sidecar.
-	// "local": loads a GGUF file directly via go-llama.cpp (no Ollama required).
+	// "local": loads a GGUF file directly via gollama (no Ollama required).
 	// Build with -tags llamacpp and CGO_ENABLED=1 for the local backend.
 	Backend string `json:"backend,omitempty"`
 
 	// GGUFPath is the path to the fine-tuned GGUF model file.
-	// Only used when Backend == "local". Example: "~/.synapses/sil-9b.gguf"
+	// Only used when Backend == "local". If empty, auto-computed as ModelDir/HFFilename.
+	// Example: "~/.synapses/models/sil-coder-Q5_K_M.gguf"
 	GGUFPath string `json:"gguf_path,omitempty"`
+
+	// ModelDir is the directory where GGUF models are stored.
+	// Default: ~/.synapses/models/
+	ModelDir string `json:"model_dir,omitempty"`
+
+	// HFRepo is the HuggingFace repository to download the model from.
+	// Example: "divish/sil-coder"
+	// Used by `brain config download` and `brain serve` (auto-download on first run).
+	HFRepo string `json:"hf_repo,omitempty"`
+
+	// HFFilename is the GGUF filename within the HuggingFace repo.
+	// Default: "sil-coder-Q5_K_M.gguf"
+	HFFilename string `json:"hf_filename,omitempty"`
 
 	// TimeoutMS is the per-request LLM timeout in milliseconds.
 	// The HTTP server WriteTimeout is set to 2× this value. Default: 60000 (60s).
@@ -103,6 +117,8 @@ func DefaultConfig() BrainConfig {
 		ModelOrchestrate: "qwen3.5:9b",
 		TimeoutMS:        60000,
 		DBPath:           filepath.Join(home, ".synapses", "brain.sqlite"),
+		ModelDir:         filepath.Join(home, ".synapses", "models"),
+		HFFilename:       "sil-coder-Q5_K_M.gguf",
 		Port:             11435,
 		Ingest:           true,
 		Enrich:           true,
@@ -194,13 +210,22 @@ func (c *BrainConfig) applyDefaults() {
 	if c.DefaultMode == "" {
 		c.DefaultMode = "standard"
 	}
-	// Expand leading ~/ in DBPath and GGUFPath.
-	if strings.HasPrefix(c.DBPath, "~/") {
+	if c.ModelDir == "" {
 		home, _ := os.UserHomeDir()
-		c.DBPath = filepath.Join(home, c.DBPath[2:])
+		c.ModelDir = filepath.Join(home, ".synapses", "models")
 	}
-	if strings.HasPrefix(c.GGUFPath, "~/") {
-		home, _ := os.UserHomeDir()
-		c.GGUFPath = filepath.Join(home, c.GGUFPath[2:])
+	if c.HFFilename == "" {
+		c.HFFilename = "sil-coder-Q5_K_M.gguf"
+	}
+	// Expand leading ~/ in paths.
+	for _, p := range []*string{&c.DBPath, &c.GGUFPath, &c.ModelDir} {
+		if strings.HasPrefix(*p, "~/") {
+			home, _ := os.UserHomeDir()
+			*p = filepath.Join(home, (*p)[2:])
+		}
+	}
+	// Auto-compute GGUFPath from ModelDir+HFFilename when backend=local and not set explicitly.
+	if c.Backend == "local" && c.GGUFPath == "" {
+		c.GGUFPath = filepath.Join(c.ModelDir, c.HFFilename)
 	}
 }

@@ -2,26 +2,27 @@
 
 package llm
 
-// local_cgo.go — CGo implementation of LocalClient using go-skynet/go-llama.cpp.
+// local_cgo.go — CGo implementation of LocalClient using godeps/gollama.
 //
 // Build requirements:
 //   CGO_ENABLED=1
-//   go-skynet/go-llama.cpp in go.mod (add with: go get github.com/go-skynet/go-llama.cpp)
+//   godeps/gollama in go.mod (add with: go get github.com/godeps/gollama)
 //
 // Platform notes:
 //   macOS (Apple Silicon): Requires Xcode command-line tools for Metal.
 //   Linux (NVIDIA):        Requires CUDA toolkit for CuBLAS acceleration.
 //   Linux/Windows (CPU):   Uses AVX-512/AVX2 SIMD automatically via llama.cpp.
 //
-// The llama.cpp library is embedded as a C/C++ submodule inside go-llama.cpp —
-// no separate installation is needed beyond the Go dependency.
+// godeps/gollama is the maintained fork of the abandoned go-skynet/go-llama.cpp.
+// The llama.cpp library is embedded as a C/C++ submodule — no separate
+// installation is needed beyond the Go dependency.
 
 import (
 	"context"
 	"fmt"
 	"strings"
 
-	llama "github.com/go-skynet/go-llama.cpp"
+	llama "github.com/godeps/gollama"
 )
 
 // loadModel loads the GGUF file and configures hardware acceleration.

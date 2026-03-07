@@ -83,30 +83,62 @@ func main() {
 func cmdServe(cfg config.BrainConfig) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	port := fs.Int("port", cfg.Port, "HTTP port to listen on")
-	model := fs.String("model", cfg.Model, "Ollama model to use")
+	model := fs.String("model", cfg.Model, "Ollama model to use (ignored when backend=local)")
 	fs.Parse(os.Args[2:])
 
 	cfg.Port = *port
 	cfg.Model = *model
 
-	b := brain.New(cfg)
-
 	ctx := context.Background()
-	if !b.Available() {
-		fmt.Fprintf(os.Stderr,
-			"brain: warning: Ollama not reachable at %s — LLM features disabled until Ollama starts\n",
-			cfg.OllamaURL,
-		)
-	} else {
-		fmt.Printf("brain: Ollama reachable, checking model %q...\n", b.ModelName())
-		if err := b.EnsureModel(ctx, os.Stderr); err != nil {
-			fmt.Fprintf(os.Stderr, "brain: warning: could not pull model: %v\n", err)
-			fmt.Fprintf(os.Stderr, "brain: run manually:  ollama pull %s\n", b.ModelName())
+
+	if cfg.Backend == "local" {
+		// Local backend: ensure GGUF exists, auto-download from HuggingFace if missing.
+		if cfg.GGUFPath == "" {
+			fmt.Fprintln(os.Stderr, "brain: backend=local but gguf_path is not set.")
+			fmt.Fprintln(os.Stderr, "       run: brain config hf-repo <username/repo>  to configure auto-download")
+			os.Exit(1)
+		}
+		if !llm.GGUFExists(cfg.GGUFPath) {
+			if cfg.HFRepo == "" {
+				fmt.Fprintf(os.Stderr, "brain: GGUF not found at %s\n", cfg.GGUFPath)
+				fmt.Fprintln(os.Stderr, "       run: brain config hf-repo <username/repo>  to enable auto-download")
+				os.Exit(1)
+			}
+			fmt.Printf("brain: GGUF not found — downloading from HuggingFace (%s/%s)...\n", cfg.HFRepo, cfg.HFFilename)
+			path, err := llm.DownloadGGUF(ctx, llm.DownloadConfig{
+				Repo:     cfg.HFRepo,
+				Filename: cfg.HFFilename,
+				DestDir:  cfg.ModelDir,
+				Progress: os.Stderr,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "brain: download failed: %v\n", err)
+				os.Exit(1)
+			}
+			cfg.GGUFPath = path
 		} else {
-			fmt.Printf("brain: model %q ready\n", b.ModelName())
+			fmt.Printf("brain: local model: %s\n", cfg.GGUFPath)
+		}
+	} else {
+		// Ollama backend: check reachability and pull model if needed.
+		bCheck := brain.New(cfg)
+		if !bCheck.Available() {
+			fmt.Fprintf(os.Stderr,
+				"brain: warning: Ollama not reachable at %s — LLM features disabled until Ollama starts\n",
+				cfg.OllamaURL,
+			)
+		} else {
+			fmt.Printf("brain: Ollama reachable, checking model %q...\n", bCheck.ModelName())
+			if err := bCheck.EnsureModel(ctx, os.Stderr); err != nil {
+				fmt.Fprintf(os.Stderr, "brain: warning: could not pull model: %v\n", err)
+				fmt.Fprintf(os.Stderr, "brain: run manually:  ollama pull %s\n", bCheck.ModelName())
+			} else {
+				fmt.Printf("brain: model %q ready\n", bCheck.ModelName())
+			}
 		}
 	}
 
+	b := brain.New(cfg)
 	srv := server.New(b, cfg.Port, cfg.TimeoutMS)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
@@ -121,16 +153,33 @@ func cmdServe(cfg config.BrainConfig) {
 
 // cmdStatus shows the current brain status.
 func cmdStatus(cfg config.BrainConfig) {
-	// Ollama ping.
-	b := brain.New(cfg)
-	available := b.Available()
+	fmt.Printf("Backend: %s\n", backendLabel(cfg))
 
-	availStr := "unreachable"
-	if available {
-		availStr = "connected"
+	if cfg.Backend == "local" {
+		exists := llm.GGUFExists(cfg.GGUFPath)
+		ggufStatus := "missing"
+		if exists {
+			info, _ := os.Stat(cfg.GGUFPath)
+			ggufStatus = fmt.Sprintf("ready (%.1f GB)", float64(info.Size())/(1024*1024*1024))
+		}
+		fmt.Printf("GGUF:    %s  [%s]\n", cfg.GGUFPath, ggufStatus)
+		if cfg.HFRepo != "" {
+			fmt.Printf("HF repo: %s/%s\n", cfg.HFRepo, cfg.HFFilename)
+		}
+		if !exists {
+			fmt.Println("         run: brain config download  to fetch the model")
+		}
+	} else {
+		// Ollama ping.
+		b := brain.New(cfg)
+		available := b.Available()
+		availStr := "unreachable"
+		if available {
+			availStr = "connected"
+		}
+		fmt.Printf("Ollama:  %s (%s)\n", availStr, cfg.OllamaURL)
+		fmt.Printf("Model:   %s\n", cfg.Model)
 	}
-	fmt.Printf("Ollama:  %s (%s)\n", availStr, cfg.OllamaURL)
-	fmt.Printf("Model:   %s\n", cfg.Model)
 
 	// SQLite stats.
 	st, err := store.Open(cfg.DBPath)
@@ -153,7 +202,8 @@ func cmdStatus(cfg config.BrainConfig) {
 	printFeature("context_builder", cfg.ContextBuilder)
 	printFeature("learning", cfg.LearningEnabled)
 
-	// SDLC config (reuse b from above).
+	// SDLC config — read directly from store (no LLM needed).
+	b := brain.New(cfg)
 	sdlcCfg := b.GetSDLCConfig()
 	fmt.Printf("\nSDLC:\n")
 	fmt.Printf("  %-12s %s\n", "phase", sdlcCfg.Phase)
@@ -498,10 +548,86 @@ func cmdConfig(cfg config.BrainConfig, cfgPath string, args []string) {
 		}
 		fmt.Printf("brain config: ollama_url set to %q (saved to %s)\n", cfg.OllamaURL, cfgPath)
 
+	case "backend":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: brain config backend <ollama|local>")
+			os.Exit(1)
+		}
+		b := args[1]
+		if b != "ollama" && b != "local" {
+			fmt.Fprintf(os.Stderr, "brain config: backend must be \"ollama\" or \"local\", got %q\n", b)
+			os.Exit(1)
+		}
+		cfg.Backend = b
+		if err := config.SaveFile(cfgPath, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "brain config: save failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("brain config: backend set to %q (saved to %s)\n", b, cfgPath)
+		if b == "local" {
+			fmt.Println("tip: run  brain config hf-repo <username/repo>  to configure auto-download")
+			fmt.Println("     run  brain config download               to fetch the GGUF now")
+		}
+
+	case "hf-repo":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: brain config hf-repo <username/repo>")
+			os.Exit(1)
+		}
+		cfg.HFRepo = args[1]
+		if err := config.SaveFile(cfgPath, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "brain config: save failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("brain config: hf_repo set to %q (saved to %s)\n", cfg.HFRepo, cfgPath)
+		fmt.Printf("tip: run  brain config download  to fetch %s/%s now\n", cfg.HFRepo, cfg.HFFilename)
+
+	case "hf-filename":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: brain config hf-filename <filename.gguf>")
+			os.Exit(1)
+		}
+		cfg.HFFilename = args[1]
+		if err := config.SaveFile(cfgPath, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "brain config: save failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("brain config: hf_filename set to %q (saved to %s)\n", cfg.HFFilename, cfgPath)
+
+	case "download":
+		// Download the GGUF from HuggingFace to ModelDir.
+		if cfg.HFRepo == "" {
+			fmt.Fprintln(os.Stderr, "brain config: hf_repo is not set.")
+			fmt.Fprintln(os.Stderr, "       run: brain config hf-repo <username/repo>  first")
+			os.Exit(1)
+		}
+		fmt.Printf("Downloading %s/%s → %s\n", cfg.HFRepo, cfg.HFFilename, cfg.ModelDir)
+		path, err := llm.DownloadGGUF(context.Background(), llm.DownloadConfig{
+			Repo:     cfg.HFRepo,
+			Filename: cfg.HFFilename,
+			DestDir:  cfg.ModelDir,
+			Progress: os.Stdout,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "brain config: download failed: %v\n", err)
+			os.Exit(1)
+		}
+		// Auto-save gguf_path if not already set.
+		if cfg.GGUFPath == "" || cfg.GGUFPath != path {
+			cfg.GGUFPath = path
+			_ = config.SaveFile(cfgPath, cfg)
+		}
+		fmt.Printf("brain config: model ready at %s\n", path)
+		fmt.Println("tip: run  brain config backend local  then  brain serve  to use it")
+
 	default:
 		fmt.Fprintf(os.Stderr, "brain config: unknown subcommand %q\n", subCmd)
 		fmt.Fprintln(os.Stderr, "usage: brain config model <tag> [--pull]")
 		fmt.Fprintln(os.Stderr, "       brain config ollama <url>")
+		fmt.Fprintln(os.Stderr, "       brain config backend <ollama|local>")
+		fmt.Fprintln(os.Stderr, "       brain config hf-repo <username/repo>")
+		fmt.Fprintln(os.Stderr, "       brain config hf-filename <file.gguf>")
+		fmt.Fprintln(os.Stderr, "       brain config download")
 		os.Exit(1)
 	}
 }
@@ -852,6 +978,14 @@ func cmdBenchmark(cfg config.BrainConfig) {
 }
 
 // shortErr truncates long error messages for display.
+// backendLabel returns a human-readable backend description for cmdStatus.
+func backendLabel(cfg config.BrainConfig) string {
+	if cfg.Backend == "local" {
+		return fmt.Sprintf("local (embedded GGUF, no Ollama required)")
+	}
+	return fmt.Sprintf("ollama (%s)", cfg.OllamaURL)
+}
+
 func shortErr(err error) string {
 	s := err.Error()
 	if len(s) > 50 {
