@@ -44,12 +44,9 @@ func ParseSILResponse(raw string) (rootSummary, insight string, concerns []strin
 		return
 	}
 
-	// Not labeled — treat the whole text as insight (handles Ollama JSON fallback
-	// which is handled upstream by parseInsight; here we just preserve raw text).
-	insight = text
-	if len(insight) > 400 {
-		insight = insight[:400] + "…"
-	}
+	// Not labeled — return empty so parseInsight's own fallback chain handles it:
+	// JSON format first, then raw text. Setting insight here causes JSON responses
+	// to bypass the JSON parser and get stored verbatim.
 	return
 }
 

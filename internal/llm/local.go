@@ -34,10 +34,10 @@ import (
 // pipeline falls back to the Ollama or no-LLM path.
 const minRAMGB = 3.0
 
-// LocalClient runs a fine-tuned GGUF model embedded in-process via go-llama.cpp.
+// LocalClient runs a fine-tuned GGUF model embedded in-process via godeps/gollama.
 // Zero network calls — everything happens in RAM.
 //
-// go-llama.cpp is not goroutine-safe per model instance, so all Generate calls
+// gollama is not goroutine-safe per context instance, so all Generate calls
 // are serialised through mu. For high-throughput workloads consider a pool of
 // LocalClient instances, one per goroutine.
 type LocalClient struct {
@@ -47,10 +47,13 @@ type LocalClient struct {
 	hw        HardwareConfig
 	think     bool // enable extended reasoning (<think> mode for Qwen3)
 
-	// model holds the go-llama.cpp model handle.
-	// We declare it as interface{} here so this file compiles without the CGo
-	// dependency. The concrete type (*llama.LLamaModel) is set by newLocalModel.
+	// model holds the gollama model handle (*llama.Model).
+	// Declared as interface{} so this file compiles without the CGo dependency.
 	model interface{}
+
+	// llamaCtx holds the gollama inference context (*llama.Context).
+	// Created from model in loadModel(); used by generate().
+	llamaCtx interface{}
 
 	// available tracks whether the model loaded successfully.
 	available bool
@@ -120,7 +123,7 @@ func (c *LocalClient) Generate(ctx context.Context, prompt string) (string, erro
 
 // Available returns true if the model is loaded and RAM is sufficient.
 func (c *LocalClient) Available(_ context.Context) bool {
-	return c.available && c.model != nil
+	return c.available && c.llamaCtx != nil
 }
 
 // ModelName returns the GGUF file name without path, used for logging.

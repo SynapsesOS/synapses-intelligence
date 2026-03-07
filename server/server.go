@@ -16,14 +16,16 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/SynapsesOS/synapses-intelligence/internal/embed"
 	"github.com/SynapsesOS/synapses-intelligence/pkg/brain"
 )
 
 // Server is the HTTP server wrapping the Brain.
 type Server struct {
-	brain  brain.Brain
-	port   int
-	server *http.Server
+	brain       brain.Brain
+	port        int
+	server      *http.Server
+	embedServer *embed.Server // nil when embedding is disabled
 }
 
 // New creates a Server that delegates to the given Brain.
@@ -52,6 +54,9 @@ func New(b brain.Brain, port int, timeoutMS int) *Server {
 	mux.HandleFunc("POST /v1/adr", s.handleUpsertADR)
 	mux.HandleFunc("GET /v1/adr", s.handleListADRs)
 	mux.HandleFunc("GET /v1/adr/{id}", s.handleGetADR)
+
+	// v0.7.0 endpoints — Ollama-free embeddings
+	mux.HandleFunc("POST /v1/embed", s.handleEmbed)
 
 	writeTimeout := time.Duration(timeoutMS*2) * time.Millisecond
 	s.server = &http.Server{
@@ -389,6 +394,44 @@ func (s *Server) handleGetADR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, adr)
+}
+
+// SetEmbedServer wires an embed.Server into this HTTP server so that
+// POST /v1/embed is handled. Call this before ListenAndServe.
+func (s *Server) SetEmbedServer(es *embed.Server) {
+	s.embedServer = es
+}
+
+// handleEmbed handles POST /v1/embed.
+// Request body: {"input": "text to embed"}
+// Response:     {"embedding": [float, ...], "model": "nomic-embed-text-v1.5.Q4_K_M", "dim": N}
+// Returns 503 when the embedding server is not configured or unavailable.
+func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
+	if s.embedServer == nil {
+		writeError(w, http.StatusServiceUnavailable,
+			"embedding not enabled — run: brain setup --with-embeddings")
+		return
+	}
+
+	var req struct {
+		Input string `json:"input"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Input == "" {
+		writeError(w, http.StatusBadRequest, "field 'input' is required")
+		return
+	}
+
+	vec, err := s.embedServer.Embed(r.Context(), req.Input)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "embed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"embedding": vec,
+		"dim":       len(vec),
+		"model":     "nomic-embed-text-v1.5.Q4_K_M",
+	})
 }
 
 // --- Helpers ---

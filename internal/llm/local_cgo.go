@@ -16,6 +16,11 @@ package llm
 // godeps/gollama is the maintained fork of the abandoned go-skynet/go-llama.cpp.
 // The llama.cpp library is embedded as a C/C++ submodule — no separate
 // installation is needed beyond the Go dependency.
+//
+// API has three levels:
+//   1. llama.LoadModel(path, ModelOptions...)   → *llama.Model
+//   2. model.NewContext(ContextOptions...)       → *llama.Context
+//   3. ctx.Generate(prompt, GenerateOptions...) → string, error
 
 import (
 	"context"
@@ -28,36 +33,45 @@ import (
 // loadModel loads the GGUF file and configures hardware acceleration.
 // Called once by NewLocalClient.
 func (c *LocalClient) loadModel() error {
-	opts := []llama.ModelOption{
-		llama.SetContext(c.contextSize),
-		llama.SetSeed(-1), // random seed for non-deterministic generation
+	// --- Level 1: load model weights ---
+	modelOpts := []llama.ModelOption{
+		llama.WithMMap(true), // memory-map weights; reduces cold-start time
 	}
 
-	// Hardware-specific acceleration
-	if c.hw.HasMetal {
-		// Apple Silicon: offload all layers to the Metal GPU.
-		// go-llama.cpp uses llama.cpp's Metal backend automatically on darwin/arm64.
-		opts = append(opts, llama.SetGPULayers(c.hw.GPULayers))
-	} else if c.hw.HasCUDA {
-		// NVIDIA: offload computed number of layers to CUDA.
-		opts = append(opts, llama.SetGPULayers(c.hw.GPULayers))
+	if c.hw.HasMetal || c.hw.HasCUDA {
+		// Offload the configured number of transformer layers to the GPU.
+		// Apple Silicon: GPULayers=99 (all layers, unified memory).
+		// NVIDIA: auto-tuned by DetectHardware based on VRAM.
+		modelOpts = append(modelOpts, llama.WithGPULayers(c.hw.GPULayers))
 	}
-	// CPU fallback: no GPU options; llama.cpp auto-detects AVX-512/AVX2.
+	// CPU fallback: no GPU option; llama.cpp auto-detects AVX-512/AVX2.
 
-	model, err := llama.New(c.modelPath, opts...)
+	model, err := llama.LoadModel(c.modelPath, modelOpts...)
 	if err != nil {
+		c.available = false
 		return err
 	}
 	c.model = model
+
+	// --- Level 2: create inference context ---
+	llamaCtx, err := model.NewContext(
+		llama.WithContext(c.contextSize), // token context window size
+	)
+	if err != nil {
+		c.available = false
+		return fmt.Errorf("create inference context: %w", err)
+	}
+	c.llamaCtx = llamaCtx
+
 	return nil
 }
 
 // generate runs a single inference call and returns the decoded text.
-// Called under c.mu, so single-threaded access to the model is guaranteed.
-func (c *LocalClient) generate(ctx context.Context, prompt string) (string, error) {
-	model, ok := c.model.(*llama.LLamaModel)
-	if !ok || model == nil {
-		return "", fmt.Errorf("local LLM: model handle is nil")
+// Called under c.mu, so single-threaded access to the context is guaranteed.
+func (c *LocalClient) generate(_ context.Context, prompt string) (string, error) {
+	llamaCtx, ok := c.llamaCtx.(*llama.Context)
+	if !ok || llamaCtx == nil {
+		return "", fmt.Errorf("local LLM: inference context is nil")
 	}
 
 	// Prepend /no_think prefix for Qwen3 models when extended reasoning is off.
@@ -68,29 +82,20 @@ func (c *LocalClient) generate(ctx context.Context, prompt string) (string, erro
 		fullPrompt = "/no_think\n" + prompt
 	}
 
-	// go-llama.cpp prediction options
-	predictOpts := []llama.PredictOption{
-		llama.SetTokens(512),     // max output tokens — match grpo_train max_completion_length
-		llama.SetTemperature(0.1), // low temperature for deterministic code graph analysis
-		llama.SetTopP(0.9),
-		llama.SetRepeatPenalty(1.1),
-	}
-
-	result, err := model.Predict(fullPrompt, predictOpts...)
+	// --- Level 3: generate ---
+	result, err := llamaCtx.Generate(fullPrompt,
+		llama.WithMaxTokens(512),     // match grpo_train max_completion_length
+		llama.WithTemperature(0.1),   // low temp for deterministic code graph analysis
+		llama.WithTopP(0.9),
+		llama.WithRepeatPenalty(1.1),
+	)
 	if err != nil {
-		return "", fmt.Errorf("local LLM predict: %w", err)
+		return "", fmt.Errorf("local LLM generate: %w", err)
 	}
 
 	// Strip any lingering <think>...</think> blocks when thinking is disabled.
 	if !c.think {
 		result = stripThinkBlocks(result)
-	}
-
-	// Check for context cancellation after the (potentially long) CGo call.
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	default:
 	}
 
 	return strings.TrimSpace(result), nil

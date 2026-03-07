@@ -237,6 +237,11 @@ func (b *Builder) Build(ctx context.Context, req Request) (*Packet, error) {
 	// Compute packet quality: 0.0 (empty) → 0.5 (summaries) → 1.0 (full with insight).
 	pkt.PacketQuality = computeQuality(pkt)
 
+	// SIL Verification Pass: deterministically annotate LLM claims against graph topology.
+	// Verified claims get [✓]; contradicted claims get [⚠ UNVERIFIED: actual value].
+	// Zero latency cost — no LLM involved.
+	verifyPacket(pkt, req)
+
 	return pkt, nil
 }
 

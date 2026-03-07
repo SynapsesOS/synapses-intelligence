@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/SynapsesOS/synapses-intelligence/config"
+	"github.com/SynapsesOS/synapses-intelligence/internal/embed"
 	"github.com/SynapsesOS/synapses-intelligence/internal/llm"
 	"github.com/SynapsesOS/synapses-intelligence/internal/store"
 	"github.com/SynapsesOS/synapses-intelligence/pkg/brain"
@@ -144,6 +145,27 @@ func cmdServe(cfg config.BrainConfig) {
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// v0.7.0: start embedding server if enabled.
+	if cfg.EmbeddingEnabled {
+		llamaBin := embed.LlamaServerBinPath(cfg.LlamaBinDir)
+		modelPath := cfg.EmbedModelPath
+		if modelPath == "" {
+			modelPath = embed.EmbedModelPath(cfg.ModelDir, cfg.EmbedHFFilename)
+		}
+		es := embed.New(modelPath, cfg.EmbedPort, llamaBin)
+		fmt.Printf("brain: starting embedding server on port %d (model: %s)…\n",
+			cfg.EmbedPort, cfg.EmbedHFFilename)
+		if err := es.Start(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "brain: embedding server failed to start: %v\n", err)
+			fmt.Fprintf(os.Stderr, "brain: run 'brain setup --with-embeddings' to download required files\n")
+			fmt.Fprintf(os.Stderr, "brain: continuing without embeddings\n")
+		} else {
+			srv.SetEmbedServer(es)
+			defer es.Stop()
+			fmt.Printf("brain: embedding server ready — POST /v1/embed enabled\n")
+		}
+	}
 
 	if err := srv.ListenAndServe(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "brain: server error: %v\n", err)
@@ -741,7 +763,16 @@ const probeMaxDuration = 90 * time.Second
 
 // cmdSetup runs an interactive-free setup wizard: detects RAM, probes installed
 // Ollama models for actual inference latency, picks the fastest, and writes brain.json.
+//
+// Flags:
+//
+//	--with-embeddings   Download llama-server binary + nomic-embed-text GGUF model
+//	                    (~8 MB binary + ~274 MB model). Required for Ollama-free embeddings.
 func cmdSetup(cfg config.BrainConfig, cfgPath string) {
+	fs := flag.NewFlagSet("setup", flag.ExitOnError)
+	withEmbeddings := fs.Bool("with-embeddings", false, "Download embedding binary and model")
+	_ = fs.Parse(os.Args[2:])
+
 	fmt.Println("synapses-intelligence setup")
 	fmt.Println("────────────────────────────")
 
@@ -755,6 +786,41 @@ func cmdSetup(cfg config.BrainConfig, cfgPath string) {
 	}
 
 	// Step 2: Ollama check.
+	// Skip Ollama entirely when --with-embeddings is the only goal
+	// (embeddings don't need Ollama — they run via llama-server subprocess).
+	if *withEmbeddings && !ollamaInstalled() {
+		fmt.Println("  ℹ Ollama not found — skipping LLM setup (--with-embeddings only mode)")
+		fmt.Println()
+
+		ctx := context.Background()
+		dlOpts := embed.DownloadOptions{
+			LlamaCPPVersion: cfg.LlamaCPPVersion,
+			BinDir:          cfg.LlamaBinDir,
+			ModelDir:        cfg.ModelDir,
+			Progress:        os.Stdout,
+		}
+		fmt.Println("  Downloading llama-server binary…")
+		if _, err := embed.EnsureLlamaServer(ctx, dlOpts); err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ llama-server download failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("  ✓ llama-server binary ready")
+		fmt.Println("  Downloading nomic-embed-text model…")
+		if _, err := embed.EnsureEmbedModel(ctx, dlOpts, cfg.EmbedHFRepo, cfg.EmbedHFFilename); err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ Embedding model download failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("  ✓ Embedding model ready")
+		cfg.EmbeddingEnabled = true
+		if err := config.SaveFile(cfgPath, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ Could not save config: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("  ✓ embedding_enabled=true saved")
+		fmt.Println()
+		fmt.Println("Run  brain serve  to start with embeddings.")
+		return
+	}
 	if !ollamaInstalled() {
 		fmt.Println("  ✗ Ollama not found on PATH.")
 		fmt.Println()
@@ -769,6 +835,7 @@ func cmdSetup(cfg config.BrainConfig, cfgPath string) {
 		}
 		fmt.Println()
 		fmt.Println("  Then run  brain setup  again.")
+		fmt.Println("  (Tip: run  brain setup --with-embeddings  to enable embeddings without Ollama)")
 		os.Exit(1)
 	}
 	fmt.Println("  ✓ Ollama installed")
@@ -868,6 +935,50 @@ func cmdSetup(cfg config.BrainConfig, cfgPath string) {
 
 	fmt.Println()
 	fmt.Println("  ✓ Model ready")
+
+	// Step 8 (optional): download llama-server + embedding model.
+	if *withEmbeddings {
+		fmt.Println()
+		fmt.Println("──────────────────────────────────────")
+		fmt.Println("Embedding setup (--with-embeddings)")
+		fmt.Println("──────────────────────────────────────")
+		fmt.Printf("  This will download:\n")
+		fmt.Printf("    • llama-server binary  (~8 MB, %s/%s)\n", runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("    • nomic-embed-text-v1.5.Q4_K_M.gguf  (~274 MB)\n")
+		fmt.Printf("  Stored in: %s and %s\n", cfg.LlamaBinDir, cfg.ModelDir)
+		fmt.Println()
+
+		embedCtx := context.Background()
+		dlOpts := embed.DownloadOptions{
+			LlamaCPPVersion: cfg.LlamaCPPVersion,
+			BinDir:          cfg.LlamaBinDir,
+			ModelDir:        cfg.ModelDir,
+			Progress:        os.Stdout,
+		}
+
+		fmt.Println("  Downloading llama-server binary…")
+		if _, err := embed.EnsureLlamaServer(embedCtx, dlOpts); err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ llama-server download failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "    You can retry later with:  brain setup --with-embeddings\n")
+		} else {
+			fmt.Println("  ✓ llama-server binary ready")
+
+			fmt.Println("  Downloading nomic-embed-text model…")
+			if _, err := embed.EnsureEmbedModel(embedCtx, dlOpts, cfg.EmbedHFRepo, cfg.EmbedHFFilename); err != nil {
+				fmt.Fprintf(os.Stderr, "  ✗ Embedding model download failed: %v\n", err)
+				fmt.Fprintf(os.Stderr, "    You can retry later with:  brain setup --with-embeddings\n")
+			} else {
+				fmt.Println("  ✓ Embedding model ready")
+				cfg.EmbeddingEnabled = true
+				if err := config.SaveFile(cfgPath, cfg); err != nil {
+					fmt.Fprintf(os.Stderr, "  ✗ Could not save config: %v\n", err)
+				} else {
+					fmt.Println("  ✓ embedding_enabled=true saved to config")
+				}
+			}
+		}
+	}
+
 	fmt.Println()
 	fmt.Println("────────────────────────────")
 	fmt.Println("Setup complete. Next steps:")
@@ -881,6 +992,10 @@ func cmdSetup(cfg config.BrainConfig, cfgPath string) {
 	fmt.Println("  3. (Re)start synapses:")
 	fmt.Println("       synapses start --path .")
 	fmt.Println()
+	if !*withEmbeddings {
+		fmt.Println("  Tip: run  brain setup --with-embeddings  to enable Ollama-free semantic search.")
+		fmt.Println()
+	}
 	fmt.Println("  Run  brain benchmark  at any time to re-measure model latency.")
 	fmt.Println("  Run  brain config model <tag> --pull  to switch models later.")
 }
