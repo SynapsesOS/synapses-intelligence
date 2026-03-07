@@ -111,7 +111,58 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	s.started = true
+
+	// Supervisor: if the subprocess exits unexpectedly, restart it with
+	// exponential backoff (1s → 2s → 4s → … capped at 30s).
+	go s.supervise(ctx, args)
+
 	return nil
+}
+
+// supervise waits for the subprocess to exit and restarts it unless the
+// context is done (clean shutdown) or Stop() was called.
+func (s *Server) supervise(ctx context.Context, args []string) {
+	backoff := time.Second
+	for {
+		_ = s.proc.Wait() // blocks until the process exits
+
+		// Check whether the exit was intentional (Stop() sets started=false).
+		s.mu.Lock()
+		if !s.started {
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
+
+		fmt.Fprintf(os.Stderr, "synapses-intelligence/embed: llama-server exited unexpectedly; restarting (backoff %s)…\n", backoff)
+
+		s.mu.Lock()
+		newProc := exec.CommandContext(ctx, s.llamaBin, args...)
+		newProc.Stderr = os.Stderr
+		if err := newProc.Start(); err != nil {
+			s.mu.Unlock()
+			fmt.Fprintf(os.Stderr, "synapses-intelligence/embed: restart failed: %v\n", err)
+			continue
+		}
+		s.proc = newProc
+		s.mu.Unlock()
+
+		if err := s.waitReady(ctx, 60*time.Second); err != nil {
+			fmt.Fprintf(os.Stderr, "synapses-intelligence/embed: restarted server not ready: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "synapses-intelligence/embed: llama-server restarted successfully\n")
+			backoff = time.Second // reset backoff on successful restart
+		}
+	}
 }
 
 // Embed returns the embedding vector for text.
